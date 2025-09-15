@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -12,6 +13,8 @@ import {
   Dumbbell,
   CheckCircle,
 } from "lucide-react";
+import { CompanyLogo } from "@/components/CompanyLogo";
+import { DifficultyBadge } from "@/components/DifficultyBadge";
 import { Link } from "wouter";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -60,6 +63,7 @@ interface FilterState {
 
 export default function Problems() {
   const { user } = useAuth();
+  const [location] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
   const [filters, setFilters] = useState<FilterState>({
     difficulties: [],
@@ -68,6 +72,21 @@ export default function Problems() {
     status: "all",
   });
 
+  // Handle URL search parameters for filtering
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const difficultyParam = urlParams.get('difficulty');
+    const companyParam = urlParams.get('company');
+    
+    if (difficultyParam || companyParam) {
+      setFilters(prev => ({
+        ...prev,
+        difficulties: difficultyParam ? [difficultyParam] : prev.difficulties,
+        companies: companyParam ? [companyParam] : prev.companies,
+      }));
+    }
+  }, [location]);
+
   const { data: problems, isLoading } = useQuery<Problem[]>({
     queryKey: ["/api/problems"],
     queryFn: () => problemsApi.getAll(),
@@ -75,12 +94,20 @@ export default function Problems() {
 
   // Get unique values for filter options
   const allCompanies = Array.from(
-    new Set(problems?.map((p) => p.company).filter(Boolean))
+    new Set((problems ?? []).map((p) => p.company).filter(Boolean))
   ).sort();
   const allTags = Array.from(
-    new Set(problems?.flatMap((p) => p.tags || []))
+    new Set((problems ?? []).flatMap((p) => p.tags || []))
   ).sort();
-  const difficulties = ["Easy", "Medium", "Hard"];
+  // Normalize difficulties to handle case/whitespace differences
+  const difficulties = Array.from(
+    new Map(
+      (problems ?? [])
+        .map((p) => p.difficulty)
+        .filter(Boolean)
+        .map((d) => [d.trim().toLowerCase(), d.trim()])
+    ).values()
+  ).sort();
 
   // Get tag counts for display
   const getTagCount = (tag: string) => {
@@ -96,10 +123,12 @@ export default function Problems() {
         problem.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         problem.question.description.toLowerCase().includes(searchQuery.toLowerCase());
 
-      // Difficulty filter
+      // Difficulty filter (case-insensitive comparison)
       const matchesDifficulty =
         filters.difficulties.length === 0 ||
-        filters.difficulties.includes(problem.difficulty);
+        filters.difficulties.some(filterDiff => 
+          filterDiff.trim().toLowerCase() === problem.difficulty?.trim().toLowerCase()
+        );
 
       // Company filter
       const matchesCompany =
@@ -126,18 +155,6 @@ export default function Problems() {
       );
     }) || [];
 
-  const getDifficultyColor = (difficulty: string) => {
-    switch (difficulty) {
-      case "Easy":
-        return "text-green-600 bg-green-50 border-green-200";
-      case "Medium":
-        return "text-orange-600 bg-orange-50 border-orange-200";
-      case "Hard":
-        return "text-red-600 bg-red-50 border-red-200";
-      default:
-        return "text-gray-600 bg-gray-50 border-gray-200";
-    }
-  };
 
   const updateFilter = (key: keyof FilterState, value: any) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -553,24 +570,20 @@ export default function Problems() {
                         }
                         data-testid={`row-problem-${problem.id}`}
                       >
-                        <TableCell className="py-4">
+                        <TableCell className="py-4 w-32">
                           <div className="flex flex-wrap gap-1">
-                            {problem.company ? (
-                              <Badge
-                                variant="outline"
-                                className="bg-blue-50 text-blue-700 border-blue-200 text-xs"
-                              >
-                                <Building2 className="w-3 h-3 mr-1" />
-                                {problem.company}
-                              </Badge>
-                            ) : (
-                              <span className="text-gray-400 text-sm">-</span>
-                            )}
+                            <CompanyLogo
+                              companyName={problem.company}
+                              variant="badge"
+                              size="sm"
+                              showFallback={true}
+                              data-testid={`company-badge-${problem.id}`}
+                            />
                           </div>
                         </TableCell>
 
-                        <TableCell className="py-4">
-                          <h3 className="font-medium text-gray-900 hover:text-orange-600 transition-colors">
+                        <TableCell className="py-4 max-w-xs">
+                          <h3 className="font-medium text-gray-900 hover:text-orange-600 transition-colors truncate">
                             {problem.title}
                           </h3>
                         </TableCell>
@@ -611,13 +624,13 @@ export default function Problems() {
                         </TableCell>
 
                         <TableCell className="py-4">
-                          <Badge
-                            className={`${getDifficultyColor(
-                              problem.difficulty
-                            )} border font-medium`}
-                          >
-                            {problem.difficulty}
-                          </Badge>
+                          <DifficultyBadge
+                            difficulty={problem.difficulty}
+                            variant="badge"
+                            size="sm"
+                            showIcon={true}
+                            data-testid={`difficulty-badge-${problem.id}`}
+                          />
                         </TableCell>
 
                         <TableCell className="py-4">
