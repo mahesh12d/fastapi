@@ -18,6 +18,8 @@ export default function ProblemDetail() {
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [latestSubmissionResult, setLatestSubmissionResult] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<string>("problem");
 
   // Memoized navigation handlers to prevent recreation
   const handleDifficultyClick = useCallback((difficulty: string) => {
@@ -63,29 +65,14 @@ export default function ProblemDetail() {
       return submissionsApi.submit(problemId, query);
     },
     onSuccess: (result) => {
-      if (result.isCorrect) {
-        toast({
-          title: "🎉 Congratulations!",
-          description: "Your solution is correct!",
-        });
-      } else {
-        toast({
-          title: "Solution submitted",
-          description: "Keep trying! Check the feedback for hints.",
-          variant: "default",
-        });
-      }
+      // Store the latest submission result for the left panel
+      setLatestSubmissionResult(result);
       // Invalidate submissions to refetch
       queryClient.invalidateQueries({
         queryKey: ["/api/submissions", problemId],
       });
-    },
-    onError: (error) => {
-      toast({
-        title: "Submission failed",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      });
+      // Auto-open submissions tab after successful submission
+      setActiveTab('submission');
     },
   });
 
@@ -166,11 +153,15 @@ export default function ProblemDetail() {
             <ProblemTabsContent
               problem={problem}
               userSubmissions={userSubmissions}
+              latestSubmissionResult={latestSubmissionResult}
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
             />
           }
           rightPanel={
             <OptimizedEditorOutputSplit
               problem={problem}
+              problemId={problemId}
               handleRunQuery={handleRunQuery}
               handleSubmitSolution={handleSubmitSolution}
               onDifficultyClick={handleDifficultyClick}
