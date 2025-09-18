@@ -206,10 +206,10 @@ def create_tables():
 def create_enum_types():
     """Create PostgreSQL enum types if they don't exist"""
     with engine.begin() as conn:
-        # Create difficulty_level enum
+        # Create difficultylevel enum (note: name matches model definition)
         conn.execute(text("""
             DO $$ BEGIN
-                CREATE TYPE difficulty_level AS ENUM ('Beginner', 'Easy', 'Medium', 'Hard', 'Expert');
+                CREATE TYPE difficultylevel AS ENUM ('BEGINNER', 'EASY', 'MEDIUM', 'HARD', 'EXPERT');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$;
@@ -253,34 +253,22 @@ def initialize_enhanced_schema():
                 
                 topics = [
                     Topic(
-                        name="Basic SELECT Queries",
-                        description="Learn fundamental SELECT statements, filtering, and sorting",
-                        difficulty_level=DifficultyLevel.BEGINNER,
-                        order_index=1
-                    ),
-                    Topic(
                         name="Joins and Relationships",
                         description="Master INNER, LEFT, RIGHT, and FULL joins",
-                        difficulty_level=DifficultyLevel.EASY,
-                        order_index=2
+                        difficulty_level="EASY",
+                        order_index=1
                     ),
                     Topic(
                         name="Aggregate Functions",
                         description="COUNT, SUM, AVG, MIN, MAX and GROUP BY clauses",
-                        difficulty_level=DifficultyLevel.MEDIUM,
-                        order_index=3
+                        difficulty_level="MEDIUM",
+                        order_index=2
                     ),
                     Topic(
                         name="Subqueries and CTEs",
                         description="Complex nested queries and Common Table Expressions",
-                        difficulty_level=DifficultyLevel.HARD,
-                        order_index=4
-                    ),
-                    Topic(
-                        name="Advanced Performance",
-                        description="Query optimization, indexing, and window functions",
-                        difficulty_level=DifficultyLevel.EXPERT,
-                        order_index=5
+                        difficulty_level="HARD",
+                        order_index=3
                     )
                 ]
                 
@@ -323,8 +311,8 @@ def initialize_enhanced_schema():
                     ),
                     Badge(
                         name="Master",
-                        description="Solve 5 Expert level problems",
-                        criteria={"expert_problems_solved": 5},
+                        description="Solve 5 Hard level problems",
+                        criteria={"hard_problems_solved": 5},
                         points_reward=200,
                         rarity="legendary"
                     )

@@ -9,11 +9,11 @@ from enum import Enum
 
 # Enums matching the SQLAlchemy enums
 class DifficultyLevel(str, Enum):
-    BEGINNER = "Beginner"
-    EASY = "Easy"
-    MEDIUM = "Medium"
-    HARD = "Hard"
-    EXPERT = "Expert"
+    BEGINNER = "BEGINNER"
+    EASY = "EASY"
+    MEDIUM = "MEDIUM"
+    HARD = "HARD"
+    EXPERT = "EXPERT"
 
 class ExecutionStatus(str, Enum):
     SUCCESS = "SUCCESS"
@@ -123,9 +123,17 @@ class SubmissionResponse(SubmissionBase):
 class CommunityPostBase(CamelCaseModel):
     content: str
     code_snippet: Optional[str] = None
+    problem_id: Optional[str] = None  # For problem-specific discussions
 
 class CommunityPostCreate(CommunityPostBase):
     pass
+
+# Simple problem schema for community posts
+class CommunityProblemResponse(CamelCaseModel):
+    id: str
+    title: str
+    company: Optional[str] = None
+    difficulty: str
 
 class CommunityPostResponse(CommunityPostBase):
     id: str
@@ -134,10 +142,12 @@ class CommunityPostResponse(CommunityPostBase):
     comments: int
     created_at: datetime
     user: UserResponse
+    problem: Optional[CommunityProblemResponse] = None
 
 # Post comment schemas
 class PostCommentBase(CamelCaseModel):
     content: str
+    parent_id: Optional[str] = None  # For nested replies
 
 class PostCommentCreate(PostCommentBase):
     pass
@@ -146,8 +156,13 @@ class PostCommentResponse(PostCommentBase):
     id: str
     user_id: str
     post_id: str
+    parent_id: Optional[str] = None
     created_at: datetime
     user: UserResponse
+    replies: List['PostCommentResponse'] = []  # Nested replies
+
+# Update forward references for recursive type
+PostCommentResponse.model_rebuild()
 
 # Authentication schemas
 class Token(CamelCaseModel):
@@ -157,6 +172,7 @@ class Token(CamelCaseModel):
 class TokenData(CamelCaseModel):
     user_id: Optional[str] = None
     username: Optional[str] = None
+    is_admin: Optional[bool] = None
 
 class LoginResponse(CamelCaseModel):
     token: str
@@ -280,8 +296,8 @@ class UserProgressBase(CamelCaseModel):
     average_execution_time_ms: Optional[float] = None
     best_execution_time_ms: Optional[float] = None
     total_time_spent_minutes: int = 0
-    current_difficulty: DifficultyLevel = DifficultyLevel.BEGINNER
-    highest_difficulty_solved: DifficultyLevel = DifficultyLevel.BEGINNER
+    current_difficulty: DifficultyLevel = DifficultyLevel.EASY
+    highest_difficulty_solved: DifficultyLevel = DifficultyLevel.EASY
     hint_usage_count: int = 0
     average_attempts_per_problem: float = 1.0
     streak_count: int = 0
@@ -341,3 +357,21 @@ class DetailedSubmissionResponse(SubmissionResponse):
     overall_score: Optional[float] = None
     passed_test_cases: Optional[int] = 0
     total_test_cases: Optional[int] = 0
+
+# Solution schemas
+class SolutionBase(CamelCaseModel):
+    title: str
+    content: str
+    sql_code: str
+    is_official: bool = True  # Always true since there's only one solution per problem
+
+class SolutionCreate(SolutionBase):
+    pass
+
+class SolutionResponse(SolutionBase):
+    id: str
+    problem_id: str
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    creator: UserResponse

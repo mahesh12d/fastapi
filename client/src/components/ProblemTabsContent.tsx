@@ -1,13 +1,21 @@
-import { memo } from 'react';
-import { Code2, MessageSquare, CheckCircle } from 'lucide-react';
+import { memo, useState } from 'react';
+import { Code2, MessageSquare, CheckCircle, BookOpen, Heart, Reply, Send, ChevronUp, ChevronDown } from 'lucide-react';
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Textarea } from '@/components/ui/textarea';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { useToast } from '@/hooks/use-toast';
+import { apiRequest, queryClient } from '@/lib/queryClient';
 import ProblemDescriptionTab from '@/components/ProblemDescriptionTab';
+import AnswersScreen from '@/components/AnswersScreen';
 
 interface Problem {
+  id?: string;
   question?: {
     description?: string;
     tables?: any[];
@@ -16,6 +24,19 @@ interface Problem {
   hints?: string[];
   tags?: string[];
   premium?: boolean | null;
+}
+
+interface Solution {
+  id: string;
+  problem_id: string;
+  title: string;
+  explanation: string;
+  code: string;
+  approach: string;
+  time_complexity: string;
+  space_complexity: string;
+  tags: string[];
+  created_at: string;
 }
 
 interface Submission {
@@ -61,7 +82,176 @@ interface ProblemTabsContentProps {
   className?: string;
   activeTab?: string;
   onTabChange?: (value: string) => void;
+  problemId?: string;
 }
+
+interface User {
+  id: string;
+  username: string;
+  profileImageUrl?: string;
+}
+
+interface Discussion {
+  id: string;
+  userId: string;
+  problemId: string;
+  content: string;
+  codeSnippet?: string;
+  likes: number;
+  comments: number;
+  createdAt: string;
+  user: User;
+  isLiked?: boolean;
+}
+
+interface Comment {
+  id: string;
+  postId: string;
+  userId: string;
+  parentId?: string;
+  content: string;
+  createdAt: string;
+  user: User;
+  replies?: Comment[];
+}
+
+const NestedComment = memo(function NestedComment({
+  comment,
+  discussionId,
+  onReply,
+  depth = 0
+}: {
+  comment: Comment;
+  discussionId: string;
+  onReply: (content: string, parentId?: string) => void;
+  depth: number;
+}) {
+  const [showReplyBox, setShowReplyBox] = useState(false);
+  const [replyContent, setReplyContent] = useState('');
+  const { toast } = useToast();
+
+  const replyMutation = useMutation({
+    mutationFn: async (data: { content: string; parentId?: string }) => {
+      return apiRequest('POST', `/api/community/posts/${discussionId}/comments`, { 
+          content: data.content,
+          parent_id: data.parentId 
+        });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/community/posts/${discussionId}/comments`] });
+      setReplyContent('');
+      setShowReplyBox(false);
+      toast({ title: "Reply posted successfully!" });
+    },
+    onError: () => {
+      toast({ title: "Failed to post reply", variant: "destructive" });
+    },
+  });
+
+  const handleSubmitReply = () => {
+    if (!replyContent.trim()) return;
+    replyMutation.mutate({ content: replyContent, parentId: comment.id });
+  };
+
+  const maxDepth = 3; // Limit nesting depth to avoid infinite nesting
+  const isMaxDepth = depth >= maxDepth;
+
+  return (
+    <div className={`${depth > 0 ? 'ml-6 mt-3' : ''}`} data-testid={`comment-${comment.id}`}>
+      <div className="flex items-start space-x-3">
+        <Avatar className={`${depth > 0 ? 'w-6 h-6' : 'w-8 h-8'}`}>
+          <AvatarImage src={comment.user.profileImageUrl} alt={comment.user.username} />
+          <AvatarFallback>
+            {comment.user.username?.charAt(0).toUpperCase() || 'U'}
+          </AvatarFallback>
+        </Avatar>
+        
+        <div className="flex-1">
+          <div className="flex items-center space-x-2 mb-1">
+            <span className={`font-medium text-foreground ${depth > 0 ? 'text-sm' : 'text-sm'}`}>
+              {comment.user.username}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {new Date(comment.createdAt).toLocaleDateString()}
+            </span>
+          </div>
+          
+          <p className={`text-foreground whitespace-pre-wrap ${depth > 0 ? 'text-sm' : 'text-sm'}`}>
+            {comment.content}
+          </p>
+          
+          {/* Reply button */}
+          {!isMaxDepth && (
+            <div className="mt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowReplyBox(!showReplyBox)}
+                className="text-xs text-muted-foreground hover:text-blue-500 h-6 px-2"
+                data-testid={`button-reply-${comment.id}`}
+              >
+                <Reply className="w-3 h-3 mr-1" />
+                Reply
+              </Button>
+            </div>
+          )}
+          
+          {/* Reply input box */}
+          {showReplyBox && (
+            <div className="mt-3 space-y-2">
+              <Textarea
+                placeholder={`Reply to ${comment.user.username}...`}
+                value={replyContent}
+                onChange={(e) => setReplyContent(e.target.value)}
+                rows={2}
+                className="resize-none text-sm"
+                data-testid={`textarea-nested-reply-${comment.id}`}
+              />
+              <div className="flex justify-end space-x-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setShowReplyBox(false);
+                    setReplyContent('');
+                  }}
+                  className="h-8 text-xs"
+                  data-testid={`button-cancel-reply-${comment.id}`}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSubmitReply}
+                  disabled={!replyContent.trim() || replyMutation.isPending}
+                  className="h-8 text-xs"
+                  data-testid={`button-submit-reply-${comment.id}`}
+                >
+                  {replyMutation.isPending ? "Posting..." : "Reply"}
+                </Button>
+              </div>
+            </div>
+          )}
+          
+          {/* Nested replies */}
+          {comment.replies && comment.replies.length > 0 && (
+            <div className="mt-3 space-y-3">
+              {comment.replies.map((reply) => (
+                <NestedComment
+                  key={reply.id}
+                  comment={reply}
+                  discussionId={discussionId}
+                  onReply={onReply}
+                  depth={depth + 1}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
 
 const OutputTable = ({ data, title }: { data: any[]; title: string }) => {
   if (!data || data.length === 0) {
@@ -111,6 +301,228 @@ const OutputTable = ({ data, title }: { data: any[]; title: string }) => {
   );
 };
 
+const DiscussionCard = memo(function DiscussionCard({ 
+  discussion, 
+  onLike, 
+  onComment 
+}: { 
+  discussion: Discussion;
+  onLike: (id: string, isLiked: boolean) => void;
+  onComment: (id: string) => void;
+}) {
+  const [showComments, setShowComments] = useState(false);
+  const [replyContent, setReplyContent] = useState('');
+  const { toast } = useToast();
+
+  const { data: comments = [] } = useQuery({
+    queryKey: [`/api/community/posts/${discussion.id}/comments`, discussion.id],
+    enabled: showComments,
+  });
+
+  const replyMutation = useMutation({
+    mutationFn: async (content: string) => {
+      return apiRequest('POST', `/api/community/posts/${discussion.id}/comments`, { content });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/community/posts/${discussion.id}/comments`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/problems/${discussion.problemId}/discussions`] });
+      setReplyContent('');
+      toast({ title: "Reply posted successfully!" });
+    },
+    onError: () => {
+      toast({ title: "Failed to post reply", variant: "destructive" });
+    },
+  });
+
+  const handleReply = () => {
+    if (!replyContent.trim()) return;
+    replyMutation.mutate(replyContent);
+  };
+
+  return (
+    <Card className="mb-4" data-testid={`discussion-${discussion.id}`}>
+      <CardContent className="p-6">
+        <div className="flex items-start space-x-4">
+          <Avatar className="w-10 h-10">
+            <AvatarImage src={discussion.user.profileImageUrl} alt={discussion.user.username} />
+            <AvatarFallback>
+              {discussion.user.username?.charAt(0).toUpperCase() || 'U'}
+            </AvatarFallback>
+          </Avatar>
+          
+          <div className="flex-1">
+            <div className="flex items-center space-x-2 mb-2">
+              <span className="font-semibold text-foreground" data-testid={`text-username-${discussion.id}`}>
+                {discussion.user.username}
+              </span>
+              <span className="text-sm text-muted-foreground">
+                {new Date(discussion.createdAt).toLocaleDateString()}
+              </span>
+            </div>
+            
+            <p className="text-foreground mb-3 whitespace-pre-wrap" data-testid={`text-content-${discussion.id}`}>
+              {discussion.content}
+            </p>
+            
+            {discussion.codeSnippet && (
+              <div className="bg-muted/50 rounded-lg p-3 mb-3">
+                <pre className="text-sm font-mono whitespace-pre-wrap" data-testid={`code-snippet-${discussion.id}`}>
+                  {discussion.codeSnippet}
+                </pre>
+              </div>
+            )}
+            
+            <div className="flex items-center space-x-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onLike(discussion.id, !!discussion.isLiked)}
+                className="text-muted-foreground hover:text-red-500"
+                data-testid={`button-like-${discussion.id}`}
+              >
+                <Heart className={`w-4 h-4 mr-1 ${discussion.isLiked ? 'fill-current text-red-500' : ''}`} />
+                {discussion.likes}
+              </Button>
+              
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowComments(!showComments)}
+                className="text-muted-foreground hover:text-blue-500"
+                data-testid={`button-comments-${discussion.id}`}
+              >
+                <MessageSquare className="w-4 h-4 mr-1" />
+                {discussion.comments}
+              </Button>
+            </div>
+            
+            {showComments && (
+              <div className="mt-4 space-y-4">
+                {/* Reply Input */}
+                <div className="flex items-start space-x-3">
+                  <Textarea
+                    placeholder="Write a reply..."
+                    value={replyContent}
+                    onChange={(e) => setReplyContent(e.target.value)}
+                    rows={2}
+                    className="resize-none"
+                    data-testid={`textarea-reply-${discussion.id}`}
+                  />
+                  <Button 
+                    size="sm" 
+                    onClick={handleReply}
+                    disabled={!replyContent.trim() || replyMutation.isPending}
+                    data-testid={`button-send-reply-${discussion.id}`}
+                  >
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </div>
+                
+                {/* Comments */}
+                <div className="space-y-3 pl-4 border-l-2 border-muted">
+                  {comments.map((comment: Comment) => (
+                    <NestedComment 
+                      key={comment.id} 
+                      comment={comment} 
+                      discussionId={discussion.id}
+                      onReply={() => {}} // Handled internally by NestedComment
+                      depth={0}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+});
+
+const CreateDiscussionDialog = memo(function CreateDiscussionDialog({ 
+  problemId, 
+  onClose 
+}: { 
+  problemId: string;
+  onClose: () => void;
+}) {
+  const [content, setContent] = useState('');
+  const [codeSnippet, setCodeSnippet] = useState('');
+  const { toast } = useToast();
+
+  const createMutation = useMutation({
+    mutationFn: async (data: { content: string; codeSnippet?: string }) => {
+      return apiRequest('POST', `/api/problems/${problemId}/discussions`, {
+          content: data.content,
+          codeSnippet: data.codeSnippet || undefined,
+        });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/problems/${problemId}/discussions`] });
+      setContent('');
+      setCodeSnippet('');
+      onClose();
+      toast({ title: "Discussion posted successfully!" });
+    },
+    onError: () => {
+      toast({ title: "Failed to create discussion", variant: "destructive" });
+    },
+  });
+
+  const handleSubmit = () => {
+    if (!content.trim()) return;
+    createMutation.mutate({ content, codeSnippet });
+  };
+
+  return (
+    <DialogContent className="max-w-2xl" data-testid="dialog-create-discussion">
+      <DialogHeader>
+        <DialogTitle>Start a New Discussion</DialogTitle>
+      </DialogHeader>
+      <div className="space-y-4">
+        <div>
+          <Textarea
+            placeholder="What would you like to discuss about this problem?"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={4}
+            className="resize-none"
+            data-testid="textarea-discussion-content"
+          />
+        </div>
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground mb-2">
+            Add code snippet (optional)
+          </summary>
+          <Textarea
+            placeholder="-- Your SQL code here
+SELECT column1, column2
+FROM table_name
+WHERE condition;"
+            value={codeSnippet}
+            onChange={(e) => setCodeSnippet(e.target.value)}
+            rows={4}
+            className="font-mono text-sm resize-none"
+            data-testid="textarea-discussion-code"
+          />
+        </details>
+        <div className="flex justify-end space-x-2">
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-discussion">
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleSubmit}
+            disabled={!content.trim() || createMutation.isPending}
+            data-testid="button-submit-discussion"
+          >
+            {createMutation.isPending ? "Posting..." : "Post Discussion"}
+          </Button>
+        </div>
+      </div>
+    </DialogContent>
+  );
+});
+
 const ProblemTabsContent = memo(function ProblemTabsContent({
   problem,
   userSubmissions = [],
@@ -118,8 +530,45 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
   className,
   activeTab = "problem",
   onTabChange,
+  problemId,
 }: ProblemTabsContentProps) {
   const hasCorrectSubmission = userSubmissions.some((sub) => sub.isCorrect);
+  const [showCreateDiscussion, setShowCreateDiscussion] = useState(false);
+  const { toast } = useToast();
+
+  // Fetch solutions for this problem
+  const { data: solutions = [], isLoading: solutionsLoading } = useQuery({
+    queryKey: [`/api/problems/${problemId}/solutions`],
+    enabled: !!problemId,
+  });
+
+  // Fetch discussions for this problem
+  const { data: discussions = [], isLoading: discussionsLoading } = useQuery({
+    queryKey: [`/api/problems/${problemId}/discussions`],
+    enabled: !!problemId,
+  });
+
+  // Like/unlike discussion mutation
+  const likeMutation = useMutation({
+    mutationFn: async ({ postId, isLiked }: { postId: string; isLiked: boolean }) => {
+      const method = isLiked ? 'DELETE' : 'POST';
+      return apiRequest(method, `/api/community/posts/${postId}/like`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/problems/${problemId}/discussions`] });
+    },
+    onError: () => {
+      toast({ title: "Failed to update like", variant: "destructive" });
+    },
+  });
+
+  const handleLike = (postId: string, isLiked: boolean) => {
+    likeMutation.mutate({ postId, isLiked });
+  };
+
+  const handleComment = (postId: string) => {
+    // This is handled by the DiscussionCard component
+  };
 
   return (
     <div className={`h-full flex flex-col ${className || ''}`}>
@@ -137,7 +586,7 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
             className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
             data-testid="tab-solution"
           >
-            Solution
+            Answers
           </TabsTrigger>
           <TabsTrigger
             value="discussion"
@@ -168,36 +617,12 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
           className="flex-1 overflow-auto p-6 pt-0 mt-0"
           data-testid="content-solution"
         >
-          <div className="space-y-6">
-            <div className="text-center py-8">
-              <Code2 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                Solution
-              </h3>
-              <p className="text-muted-foreground mb-4">
-                Complete this problem to view the official solution and
-                explanations.
-              </p>
-              {!hasCorrectSubmission && (
-                <Alert className="border-yellow-200 bg-yellow-50 dark:bg-yellow-950/30">
-                  <AlertDescription className="text-yellow-800 dark:text-yellow-200">
-                    💡 Solve the problem first to unlock the detailed
-                    solution walkthrough!
-                  </AlertDescription>
-                </Alert>
-              )}
-              {hasCorrectSubmission && (
-                <div className="mt-6 p-6 bg-muted/50 rounded-lg">
-                  <h4 className="font-semibold mb-4">Official Solution:</h4>
-                  <div className="text-left font-mono text-sm bg-background rounded border p-4">
-                    <p className="text-muted-foreground">
-                      [Solution code would be displayed here]
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          {problemId && (
+            <AnswersScreen 
+              problemId={problemId} 
+              problem={problem}
+            />
+          )}
         </TabsContent>
 
         <TabsContent
@@ -210,26 +635,58 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
               <h3 className="text-lg font-semibold text-foreground">
                 Discussion
               </h3>
-              <Button
-                variant="outline"
-                size="sm"
-                data-testid="button-new-discussion"
-              >
-                <MessageSquare className="h-4 w-4 mr-2" />
-                New Discussion
-              </Button>
+              <Dialog open={showCreateDiscussion} onOpenChange={setShowCreateDiscussion}>
+                <DialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="button-new-discussion"
+                  >
+                    <MessageSquare className="h-4 w-4 mr-2" />
+                    New Discussion
+                  </Button>
+                </DialogTrigger>
+                {problemId && (
+                  <CreateDiscussionDialog 
+                    problemId={problemId} 
+                    onClose={() => setShowCreateDiscussion(false)} 
+                  />
+                )}
+              </Dialog>
             </div>
 
             <div className="space-y-4">
-              <div className="text-center py-8">
-                <MessageSquare className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <h4 className="text-base font-semibold text-foreground mb-2">
-                  No discussions yet
-                </h4>
-                <p className="text-muted-foreground mb-4">
-                  Be the first to start a discussion about this problem!
-                </p>
-              </div>
+              {discussionsLoading && (
+                <div className="text-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+                  <p className="text-muted-foreground">Loading discussions...</p>
+                </div>
+              )}
+
+              {!discussionsLoading && discussions.length === 0 && (
+                <div className="text-center py-8">
+                  <MessageSquare className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <h4 className="text-base font-semibold text-foreground mb-2">
+                    No discussions yet
+                  </h4>
+                  <p className="text-muted-foreground mb-4">
+                    Be the first to start a discussion about this problem!
+                  </p>
+                </div>
+              )}
+
+              {!discussionsLoading && discussions.length > 0 && (
+                <div className="space-y-4" data-testid="discussions-list">
+                  {discussions.map((discussion: Discussion) => (
+                    <DiscussionCard
+                      key={discussion.id}
+                      discussion={discussion}
+                      onLike={handleLike}
+                      onComment={handleComment}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </TabsContent>

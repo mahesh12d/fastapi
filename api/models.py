@@ -14,11 +14,9 @@ Base = declarative_base()
 # Named Postgres enums for better type safety and performance
 # Python enums for reference
 class DifficultyLevel(enum.Enum):
-    BEGINNER = "Beginner"
     EASY = "Easy"
     MEDIUM = "Medium"
     HARD = "Hard"
-    EXPERT = "Expert"
 
 class ExecutionStatus(enum.Enum):
     SUCCESS = "SUCCESS"
@@ -33,8 +31,8 @@ class SandboxStatus(enum.Enum):
 
 # Create named Postgres enums
 difficulty_enum = ENUM(
-    'Beginner', 'Easy', 'Medium', 'Hard', 'Expert',
-    name='difficulty_level',
+    'BEGINNER', 'EASY', 'MEDIUM', 'HARD', 'EXPERT',
+    name='difficultylevel',
     create_type=False
 )
 
@@ -65,6 +63,7 @@ class User(Base):
     auth_provider = Column(String(20), default="email", nullable=False, name="auth_provider")
     problems_solved = Column(Integer, default=0, nullable=False, name="problems_solved")
     premium = Column(Boolean, nullable=False, default=False)  # False = free user, True = premium user
+    is_admin = Column(Boolean, nullable=False, default=False)  # False = regular user, True = admin user
     created_at = Column(DateTime, default=func.now(), nullable=False, name="created_at")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, name="updated_at")
     
@@ -96,12 +95,15 @@ class Problem(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False, name="created_at")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, name="updated_at")
     
+    topic_id = Column(String, ForeignKey("topics.id", ondelete="SET NULL"))
+    
     # Relationships
     submissions = relationship("Submission", back_populates="problem")
     test_cases = relationship("TestCase", back_populates="problem")
     schemas = relationship("ProblemSchema", back_populates="problem")
     sandboxes = relationship("UserSandbox", back_populates="problem")
-    topic_id = Column(String, ForeignKey("topics.id", ondelete="SET NULL"))
+    community_posts = relationship("CommunityPost", back_populates="problem")
+    solutions = relationship("Solution", back_populates="problem")
     topic = relationship("Topic", back_populates="problems")
     
     # Indexes for performance
@@ -141,6 +143,7 @@ class CommunityPost(Base):
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, name="user_id")
+    problem_id = Column(String, ForeignKey("problems.id", ondelete="CASCADE"), nullable=True, name="problem_id")  # For problem-specific discussions
     content = Column(Text, nullable=False)
     code_snippet = Column(Text, name="code_snippet")
     likes = Column(Integer, default=0, nullable=False)
@@ -150,6 +153,7 @@ class CommunityPost(Base):
     
     # Relationships
     user = relationship("User", back_populates="community_posts")
+    problem = relationship("Problem", back_populates="community_posts")
     post_likes = relationship("PostLike", back_populates="post")
     post_comments = relationship("PostComment", back_populates="post")
 
@@ -174,12 +178,14 @@ class PostComment(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, name="user_id")
     post_id = Column(String, ForeignKey("community_posts.id", ondelete="CASCADE"), nullable=False, name="post_id")
+    parent_id = Column(String, ForeignKey("post_comments.id", ondelete="CASCADE"), nullable=True, name="parent_id")  # For nested replies
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False, name="created_at")
     
     # Relationships
     user = relationship("User", back_populates="post_comments")
     post = relationship("CommunityPost", back_populates="post_comments")
+    parent = relationship("PostComment", remote_side=[id], backref="replies")
 
 # New Tables for Enhanced SQL Learning Platform
 
@@ -337,8 +343,8 @@ class UserProgress(Base):
     total_time_spent_minutes = Column(Integer, default=0)
     
     # Difficulty progression
-    current_difficulty = Column(difficulty_enum, default=DifficultyLevel.BEGINNER.value)
-    highest_difficulty_solved = Column(difficulty_enum, default=DifficultyLevel.BEGINNER.value)
+    current_difficulty = Column(difficulty_enum, default="EASY")
+    highest_difficulty_solved = Column(difficulty_enum, default="EASY")
     
     # Learning metrics
     hint_usage_count = Column(Integer, default=0)
@@ -393,3 +399,28 @@ class UserBadge(Base):
     
     # Unique constraint: one badge per user (prevent duplicate awards)
     __table_args__ = (UniqueConstraint('user_id', 'badge_id', name='uq_user_badges_user_badge'),)
+
+class Solution(Base):
+    """Official solutions for problems posted by admins"""
+    __tablename__ = "solutions"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    problem_id = Column(String, ForeignKey("problems.id", ondelete="CASCADE"), nullable=False, name="problem_id")
+    created_by = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, name="created_by")
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)  # Solution explanation
+    sql_code = Column(Text, nullable=False, name="sql_code")  # The actual SQL solution
+    is_official = Column(Boolean, default=True, nullable=False, name="is_official")  # Mark as official solution
+    created_at = Column(DateTime, default=func.now(), nullable=False, name="created_at")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, name="updated_at")
+    
+    # Relationships
+    problem = relationship("Problem", back_populates="solutions")
+    creator = relationship("User", foreign_keys=[created_by])
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_solutions_problem_id', 'problem_id'),
+        Index('idx_solutions_created_by', 'created_by'),
+        Index('idx_solutions_created_at', 'created_at'),
+    )

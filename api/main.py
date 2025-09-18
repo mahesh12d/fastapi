@@ -13,16 +13,17 @@ from datetime import timedelta
 import random
 
 from .database import get_db, create_tables
-from .models import User, Problem, Submission, CommunityPost, PostLike, PostComment
+from .models import User, Problem, Submission, CommunityPost, PostLike, PostComment, Solution
 from .schemas import (UserCreate, UserResponse, UserLogin, LoginResponse,
                       RegisterResponse, ProblemResponse, SubmissionCreate,
                       SubmissionResponse, CommunityPostCreate,
                       CommunityPostResponse, PostCommentCreate,
-                      PostCommentResponse)
+                      PostCommentResponse, SolutionResponse, QuestionData)
 from .auth import (get_password_hash, verify_password, create_access_token,
                    get_current_user, get_current_user_optional)
 from .secure_execution import secure_executor
 from .sandbox_routes import sandbox_router
+from .admin_routes import admin_router
 
 # Create FastAPI app
 app = FastAPI(title="SQLGym API",
@@ -54,6 +55,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(sandbox_router)
+app.include_router(admin_router)
 
 
 def format_console_output(execution_result):
@@ -74,11 +76,15 @@ def format_console_output(execution_result):
 
 
 # Create tables on startup
-@app.on_event("startup")
-def startup_event():
-    from .database import run_schema_migrations
-    run_schema_migrations()  # Run migrations first
-    create_tables()  # Then create any missing tables
+# @app.on_event("startup")  
+# def startup_event():
+#     try:
+#         print("🚀 Starting database initialization...")
+#         create_tables()  # Just create basic tables first
+#         print("✅ Database initialization completed")
+#     except Exception as e:
+#         print(f"⚠️ Database initialization failed, continuing anyway: {e}")
+#         # Continue startup even if database fails
 
 
 # Development/fallback root endpoint
@@ -88,7 +94,38 @@ def health_check():
     return {"status": "healthy", "service": "SQLGym API", "version": "1.0.0"}
 
 
-# Development/fallback root endpoint
+# Database initialization endpoint (admin-only, authenticated)
+@app.post("/api/admin/init-db")
+def initialize_database(current_user: User = Depends(get_current_user)):
+    """Initialize database tables and schema. Admin-only endpoint for safe database setup."""
+    # Check if user is admin
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required for database initialization"
+        )
+    
+    try:
+        print("🚀 Starting database initialization...")
+        
+        # Just create tables - skip complex migrations for now
+        create_tables()
+        print("✅ Database tables created")
+        
+        return {
+            "success": True,
+            "message": "Database initialized successfully",
+            "operations": ["table_creation"]
+        }
+    except Exception as e:
+        print(f"❌ Database initialization failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database initialization failed: {str(e)}"
+        )
+
+
+# Root endpoint and SPA fallback
 @app.get("/")
 def read_root():
     if os.path.exists("dist/public/index.html"):
@@ -96,6 +133,9 @@ def read_root():
     return {
         "message": "SQLGym FastAPI Backend - Please run 'npm run build' first"
     }
+
+
+# SPA fallback route will be defined at the very end of the file after all API routes
 
 
 # Mount static assets for production
@@ -147,7 +187,8 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     # Generate JWT token
     access_token = create_access_token(data={
         "userId": user.id,
-        "username": user.username
+        "username": user.username,
+        "isAdmin": user.is_admin
     })
 
     return RegisterResponse(token=access_token,
@@ -173,7 +214,8 @@ def login(login_data: UserLogin, db: Session = Depends(get_db)):
     # Generate JWT token
     access_token = create_access_token(data={
         "userId": user.id,
-        "username": user.username
+        "username": user.username,
+        "isAdmin": user.is_admin
     })
 
     return LoginResponse(token=access_token, user=UserResponse.from_orm(user))
@@ -246,11 +288,11 @@ def get_problems(
         # For premium problems, filter content for non-premium users
         if problem.premium is True and (not current_user or not current_user.premium):
             # Create a limited question data for premium problems
-            limited_question = {
-                "description": "🔒 Premium Problem - Subscribe to view full description",
-                "tables": [],
-                "expectedOutput": []
-            }
+            limited_question = QuestionData(
+                description="🔒 Premium Problem - Subscribe to view full description",
+                tables=[],
+                expectedOutput=[]
+            )
             problem_data.question = limited_question
         
         problems.append(problem_data)
@@ -273,11 +315,11 @@ def get_problem(problem_id: str,
     if problem.premium is True and (not current_user or not current_user.premium):
         # Return problem with premium message instead of throwing error
         problem_data = ProblemResponse.from_orm(problem)
-        premium_question = {
-            "description": "Want to lift try Premium 🏋️‍♂️",
-            "tables": [],
-            "expectedOutput": []
-        }
+        premium_question = QuestionData(
+            description="Want to lift try Premium 🏋️‍♂️",
+            tables=[],
+            expectedOutput=[]
+        )
         problem_data.question = premium_question
         problem_data.hints = []  # Hide hints for non-premium users
         return problem_data
@@ -453,12 +495,23 @@ def create_submission(submission_data: SubmissionCreate,
                             execution_time=execution_time)
 
     db.add(submission)
-
-    # If correct, update user progress
-    if is_correct:
-        current_user.problems_solved = (current_user.problems_solved or 0) + 1
-
     db.commit()
+    db.refresh(submission)
+
+    # If correct, update user progress (check for duplicates after commit)
+    if is_correct:
+        # Check if this is the first time solving this problem
+        existing_correct = db.query(Submission).filter(
+            Submission.user_id == current_user.id,
+            Submission.problem_id == submission_data.problem_id,
+            Submission.is_correct == True,
+            Submission.id != submission.id  # Exclude current submission
+        ).first()
+        
+        if not existing_correct:
+            # First time solving this problem
+            current_user.problems_solved = (current_user.problems_solved or 0) + 1
+            db.commit()
     db.refresh(submission)
 
     return SubmissionResponse.from_orm(submission)
@@ -497,6 +550,38 @@ def get_problem_submissions(problem_id: str,
     return [SubmissionResponse.from_orm(sub) for sub in submissions]
 
 
+@app.get("/api/problems/{problem_id}/solutions",
+         response_model=List[SolutionResponse],
+         response_model_by_alias=True)
+def get_problem_solutions(problem_id: str, db: Session = Depends(get_db)):
+    """Get all official solutions for a specific problem (public access)"""
+    solutions = db.query(Solution).options(joinedload(Solution.creator)).filter(
+        Solution.problem_id == problem_id,
+        Solution.is_official == True  # Only show official solutions
+    ).order_by(Solution.created_at.desc()).all()
+    
+    return [SolutionResponse.from_orm(solution) for solution in solutions]
+
+
+@app.get("/api/problems/{problem_id}/official-solution",
+         response_model=SolutionResponse,
+         response_model_by_alias=True)
+def get_official_solution(problem_id: str, db: Session = Depends(get_db)):
+    """Get the official solution for a specific problem (returns single solution)"""
+    solution = db.query(Solution).options(joinedload(Solution.creator)).filter(
+        Solution.problem_id == problem_id,
+        Solution.is_official == True
+    ).order_by(Solution.created_at.desc()).first()
+    
+    if not solution:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No official solution found for this problem"
+        )
+    
+    return SolutionResponse.from_orm(solution)
+
+
 # Leaderboard endpoint
 @app.get("/api/leaderboard",
          response_model=List[UserResponse],
@@ -514,8 +599,10 @@ def get_leaderboard(limit: Optional[int] = Query(50),
          response_model=List[CommunityPostResponse],
          response_model_by_alias=True)
 def get_community_posts(db: Session = Depends(get_db)):
-    posts = db.query(CommunityPost).options(joinedload(
-        CommunityPost.user)).order_by(desc(CommunityPost.created_at)).all()
+    posts = db.query(CommunityPost).options(
+        joinedload(CommunityPost.user),
+        joinedload(CommunityPost.problem)
+    ).order_by(desc(CommunityPost.created_at)).all()
 
     return [CommunityPostResponse.from_orm(post) for post in posts]
 
@@ -528,7 +615,8 @@ def create_community_post(post_data: CommunityPostCreate,
                           db: Session = Depends(get_db)):
     post = CommunityPost(user_id=current_user.id,
                          content=post_data.content,
-                         code_snippet=post_data.code_snippet)
+                         code_snippet=post_data.code_snippet,
+                         problem_id=post_data.problem_id)
 
     db.add(post)
     db.commit()
@@ -595,11 +683,31 @@ def unlike_post(post_id: str,
          response_model=List[PostCommentResponse],
          response_model_by_alias=True)
 def get_post_comments(post_id: str, db: Session = Depends(get_db)):
-    comments = db.query(PostComment).options(joinedload(
+    # Get all comments for the post
+    all_comments = db.query(PostComment).options(joinedload(
         PostComment.user)).filter(PostComment.post_id == post_id).order_by(
             PostComment.created_at).all()
-
-    return [PostCommentResponse.from_orm(comment) for comment in comments]
+    
+    # Build nested comment structure
+    comment_map = {}
+    root_comments = []
+    
+    # First pass: create comment objects
+    for comment in all_comments:
+        comment_response = PostCommentResponse.from_orm(comment)
+        comment_map[comment.id] = comment_response
+    
+    # Second pass: build tree structure
+    for comment in all_comments:
+        comment_response = comment_map[comment.id]
+        if comment.parent_id and comment.parent_id in comment_map:
+            # This is a reply, add to parent's replies
+            comment_map[comment.parent_id].replies.append(comment_response)
+        else:
+            # This is a root comment
+            root_comments.append(comment_response)
+    
+    return root_comments
 
 
 @app.post("/api/community/posts/{post_id}/comments",
@@ -609,9 +717,23 @@ def create_post_comment(post_id: str,
                         comment_data: PostCommentCreate,
                         current_user: User = Depends(get_current_user),
                         db: Session = Depends(get_db)):
-    comment = PostComment(user_id=current_user.id,
-                          post_id=post_id,
-                          content=comment_data.content)
+    # Validate parent comment exists if parent_id is provided
+    if comment_data.parent_id:
+        parent_comment = db.query(PostComment).filter(
+            and_(PostComment.id == comment_data.parent_id, PostComment.post_id == post_id)
+        ).first()
+        if not parent_comment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Parent comment not found"
+            )
+    
+    comment = PostComment(
+        user_id=current_user.id,
+        post_id=post_id,
+        parent_id=comment_data.parent_id,
+        content=comment_data.content
+    )
 
     db.add(comment)
 
@@ -628,6 +750,90 @@ def create_post_comment(post_id: str,
         PostComment.user)).filter(PostComment.id == comment.id).first()
 
     return PostCommentResponse.from_orm(comment)
+
+
+# Solution API routes (public viewing)
+@app.get("/api/problems/{problem_id}/solutions", response_model=List[SolutionResponse])
+def get_problem_solutions_public(
+    problem_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get all official solutions for a problem (public view)"""
+    solutions = db.query(Solution).options(joinedload(Solution.creator)).filter(
+        and_(Solution.problem_id == problem_id, Solution.is_official == True)
+    ).order_by(Solution.created_at.desc()).all()
+    
+    return [SolutionResponse.from_orm(solution) for solution in solutions]
+
+# Enhanced discussion API routes for problem-specific discussions  
+@app.get("/api/problems/{problem_id}/discussions", response_model=List[CommunityPostResponse])
+def get_problem_discussions(
+    problem_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """Get discussions for a specific problem"""
+    posts = db.query(CommunityPost).options(
+        joinedload(CommunityPost.user)
+    ).filter(
+        CommunityPost.problem_id == problem_id
+    ).order_by(
+        desc(CommunityPost.created_at)
+    ).limit(limit).all()
+    
+    return [CommunityPostResponse.from_orm(post) for post in posts]
+
+@app.post("/api/problems/{problem_id}/discussions", response_model=CommunityPostResponse)
+def create_problem_discussion(
+    problem_id: str,
+    post_data: CommunityPostCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new discussion post for a specific problem"""
+    # Verify problem exists
+    problem = db.query(Problem).filter(Problem.id == problem_id).first()
+    if not problem:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Problem not found"
+        )
+    
+    # Create discussion post
+    post = CommunityPost(
+        user_id=current_user.id,
+        problem_id=problem_id,  # Link to problem
+        content=post_data.content,
+        code_snippet=post_data.code_snippet
+    )
+    
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+    
+    # Load user relationship
+    post = db.query(CommunityPost).options(joinedload(CommunityPost.user)).filter(
+        CommunityPost.id == post.id
+    ).first()
+    
+    return CommunityPostResponse.from_orm(post)
+
+# Get all community posts with optional problem filtering
+@app.get("/api/community/posts/all", response_model=List[CommunityPostResponse])
+def get_all_community_posts(
+    problem_id: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """Get all community posts with optional problem filtering"""
+    query = db.query(CommunityPost).options(joinedload(CommunityPost.user))
+    
+    if problem_id:
+        query = query.filter(CommunityPost.problem_id == problem_id)
+    
+    posts = query.order_by(desc(CommunityPost.created_at)).limit(limit).all()
+    
+    return [CommunityPostResponse.from_orm(post) for post in posts]
 
 
 # Helper function for query simulation
