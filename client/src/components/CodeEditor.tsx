@@ -15,6 +15,7 @@ interface Problem {
 
 interface CodeEditorProps {
   problem?: Problem;
+  problemId?: string;
   onRunQuery: (query: string) => Promise<any>;
   onSubmitSolution: (query: string) => Promise<any>;
   isRunning?: boolean;
@@ -24,6 +25,7 @@ interface CodeEditorProps {
 
 const CodeEditor = memo(function CodeEditor({
   problem,
+  problemId,
   onRunQuery,
   onSubmitSolution,
   isRunning = false,
@@ -33,16 +35,47 @@ const CodeEditor = memo(function CodeEditor({
   const [query, setQuery] = useState('');
   const isDarkMode = useTheme();
 
-  // Initialize query when problem loads
+  // Get storage key for this problem
+  const storageKey = problemId ? `sqlgym_query_${problemId}` : null;
+
+  // Initialize query with priority: saved query > starter query > default table query
   useEffect(() => {
-    if (problem?.question?.starterQuery) {
-      setQuery(problem.question.starterQuery);
-    } else if (problem?.question?.tables && problem.question.tables.length > 0) {
-      const firstTable = problem.question.tables[0];
-      const tableName = firstTable.name;
-      setQuery(`SELECT * FROM "${tableName}";`);
+    if (!problem || !problemId) return;
+
+    // Try to restore saved query first
+    let initialQuery = '';
+    if (storageKey) {
+      const savedQuery = localStorage.getItem(storageKey);
+      if (savedQuery) {
+        initialQuery = savedQuery;
+      }
     }
-  }, [problem]);
+
+    // Fall back to starter query or default if no saved query
+    if (!initialQuery) {
+      if (problem?.question?.starterQuery) {
+        initialQuery = problem.question.starterQuery;
+      } else if (problem?.question?.tables && problem.question.tables.length > 0) {
+        const firstTable = problem.question.tables[0];
+        const tableName = firstTable.name;
+        initialQuery = `SELECT * FROM "${tableName}";`;
+      }
+    }
+
+    if (initialQuery) {
+      setQuery(initialQuery);
+    }
+  }, [problem, problemId, storageKey]);
+
+  // Handle query changes and persist to localStorage
+  const handleQueryChange = useCallback((value: string) => {
+    setQuery(value);
+    
+    // Save to localStorage immediately to survive remounts
+    if (storageKey) {
+      localStorage.setItem(storageKey, value);
+    }
+  }, [storageKey]);
 
   // Memoized handlers to prevent recreation
   const handleRun = useCallback(async () => {
@@ -70,7 +103,7 @@ const CodeEditor = memo(function CodeEditor({
           <CardContent className="p-0 flex-1 min-h-0 overflow-hidden">
             <CodeMirror
               value={query}
-              onChange={(value) => setQuery(value)}
+              onChange={handleQueryChange}
               height="calc(100vh - 200px)"
               theme={theme}
               extensions={extensions}

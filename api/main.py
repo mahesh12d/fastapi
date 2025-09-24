@@ -30,11 +30,21 @@ app = FastAPI(title="SQLGym API",
               description="A gamified SQL learning platform API",
               version="1.0.0")
 
-# Add CORS middleware
+# Add CORS middleware - Updated for Railway + Vercel/Netlify deployment
 frontend_origins = [
-    "http://localhost:5000", "https://*.replit.dev", "https://*.replit.app",
-    "https://*.replit.co"
+    "http://localhost:5000", 
+    "http://localhost:3000",  # Local React development
+    "https://*.replit.dev", 
+    "https://*.replit.app",
+    "https://*.replit.co",
+    "https://*.vercel.app",   # Vercel deployments
+    "https://*.netlify.app",  # Netlify deployments
+    "https://*.netlify.com"   # Netlify custom domains
 ]
+
+# Add production frontend domains from environment variables
+if os.getenv("FRONTEND_URL"):
+    frontend_origins.append(os.getenv("FRONTEND_URL"))
 
 # In production, use environment variable or specific domain
 if os.getenv("REPL_ID"):
@@ -52,6 +62,23 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["*"],
 )
+
+# Global exception handler for UTF-8 encoding issues
+from fastapi.responses import JSONResponse
+@app.exception_handler(UnicodeDecodeError)
+async def unicode_decode_error_handler(request, exc: UnicodeDecodeError):
+    """Handle UTF-8 encoding errors by returning sanitized JSON response"""
+    from .secure_execution import sanitize_json_data
+    error_data = {
+        "error": "Encoding error occurred",
+        "detail": "The response contains non-UTF-8 data that has been sanitized",
+        "status_code": 500
+    }
+    return JSONResponse(
+        status_code=500,
+        content=sanitize_json_data(error_data),
+        headers={"Content-Type": "application/json; charset=utf-8"}
+    )
 
 # Include routers
 app.include_router(sandbox_router)
@@ -92,6 +119,13 @@ def format_console_output(execution_result):
 @app.get("/api/health")
 def health_check():
     return {"status": "healthy", "service": "SQLGym API", "version": "1.0.0"}
+
+
+# Root API endpoint to handle HEAD/GET requests to /api
+@app.get("/api")
+@app.head("/api")
+def api_root():
+    return {"message": "SQLGym API", "version": "1.0.0", "status": "running"}
 
 
 # Database initialization endpoint (admin-only, authenticated)
@@ -280,10 +314,36 @@ def get_problems(
     # Format response
     problems = []
     for problem, solved_count, is_user_solved in results:
+        # Handle JSON parsing for question field if it's a string
+        import json
+        if isinstance(problem.question, str):
+            try:
+                problem.question = json.loads(problem.question)
+            except (json.JSONDecodeError, TypeError):
+                # If parsing fails, create a default QuestionData structure
+                problem.question = {
+                    "description": "Error loading problem description",
+                    "tables": [],
+                    "expectedOutput": []
+                }
+        
         problem_data = ProblemResponse.from_orm(problem)
         problem_data.solved_count = int(solved_count)
         problem_data.is_user_solved = bool(
             is_user_solved) if current_user else False
+        
+        # Use expected_display for user-facing expected output (separate from validation)
+        if hasattr(problem, 'expected_display') and problem.expected_display is not None:
+            problem_data.expected_output = problem.expected_display
+        elif hasattr(problem, 'expected_output') and problem.expected_output is not None:
+            # Fallback to legacy expected_output field for backward compatibility
+            problem_data.expected_output = problem.expected_output
+        else:
+            # No expected output available for display
+            problem_data.expected_output = []
+            
+        # Clear master_solution from user response - this should only be used during submission validation
+        problem_data.master_solution = None
         
         # For premium problems, filter content for non-premium users
         if problem.premium is True and (not current_user or not current_user.premium):
@@ -306,10 +366,28 @@ def get_problems(
 def get_problem(problem_id: str, 
                 current_user: Optional[User] = Depends(get_current_user_optional),
                 db: Session = Depends(get_db)):
+    from .s3_service import s3_service
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
     problem = db.query(Problem).filter(Problem.id == problem_id).first()
     if not problem:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Problem not found")
+    
+    # Handle JSON parsing for question field if it's a string
+    import json
+    if isinstance(problem.question, str):
+        try:
+            problem.question = json.loads(problem.question)
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, create a default QuestionData structure
+            problem.question = {
+                "description": "Error loading problem description",
+                "tables": [],
+                "expectedOutput": []
+            }
     
     # Check if problem is premium and user doesn't have premium access
     if problem.premium is True and (not current_user or not current_user.premium):
@@ -324,7 +402,26 @@ def get_problem(problem_id: str,
         problem_data.hints = []  # Hide hints for non-premium users
         return problem_data
     
-    return ProblemResponse.from_orm(problem)
+    # Create response from ORM
+    problem_data = ProblemResponse.from_orm(problem)
+    
+    # Use expected_display for user-facing expected output (separate from validation)
+    if hasattr(problem, 'expected_display') and problem.expected_display is not None:
+        problem_data.expected_output = problem.expected_display
+        logger.info(f"Using expected_display with {len(problem.expected_display)} rows for user display")
+    elif hasattr(problem, 'expected_output') and problem.expected_output is not None:
+        # Fallback to legacy expected_output field for backward compatibility
+        problem_data.expected_output = problem.expected_output
+        logger.info(f"Using legacy expected_output field with {len(problem.expected_output)} rows")
+    else:
+        # No expected output available for display
+        problem_data.expected_output = []
+        logger.warning(f"No expected display output found for problem {problem_id}")
+        
+    # Clear master_solution from user response - this should only be used during submission validation
+    problem_data.master_solution = None
+    
+    return problem_data
 
 
 # New secure execution endpoints
@@ -361,54 +458,14 @@ async def submit_solution(problem_id: str,
 
     # Add console output to submission response
     result['console_output'] = format_console_output(result)
-    return result
-
-
-@app.get("/api/problems/{problem_id}/sandbox")
-async def get_or_create_sandbox(problem_id: str,
-                                current_user: User = Depends(get_current_user),
-                                db: Session = Depends(get_db)):
-    """Get or create user sandbox for a problem"""
-    from .sandbox_manager import create_user_sandbox
-    from .models import UserSandbox, SandboxStatus
-
-    # Check if problem exists and is accessible
-    problem = db.query(Problem).filter(Problem.id == problem_id).first()
-    if not problem:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Problem not found")
     
-    # Check if problem is premium and user doesn't have premium access
-    if problem.premium is True and not current_user.premium:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="Premium subscription required to access sandbox for this problem")
+    # Sanitize result to prevent JSON serialization errors
+    from .secure_execution import sanitize_json_data
+    return sanitize_json_data(result)
 
-    # Check for existing active sandbox
-    existing_sandbox = db.query(UserSandbox).filter(
-        UserSandbox.user_id == current_user.id,
-        UserSandbox.problem_id == problem_id,
-        UserSandbox.status == SandboxStatus.ACTIVE.value).first()
 
-    if existing_sandbox:
-        return {
-            "sandbox_id": existing_sandbox.id,
-            "status": existing_sandbox.status,
-            "expires_at": existing_sandbox.expires_at.isoformat(),
-            "created_at": existing_sandbox.created_at.isoformat()
-        }
-
-    # Create new sandbox
-    try:
-        sandbox = await create_user_sandbox(current_user.id, problem_id)
-        return {
-            "sandbox_id": sandbox.id,
-            "status": sandbox.status,
-            "expires_at": sandbox.expires_at.isoformat(),
-            "created_at": sandbox.created_at.isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to create sandbox: {str(e)}")
+# PostgreSQL sandbox functionality removed - using DuckDB only
+# Redirect to DuckDB sandbox endpoints in /api/sandbox/duckdb/
 
 
 @app.post("/api/problems/{problem_id}/test")
@@ -443,7 +500,7 @@ async def test_query(problem_id: str,
     results_data = query_result.get('result', []) if query_result else []
     execution_time = query_result.get('execution_time_ms', 0) if query_result else 0
     
-    return {
+    response_data = {
         "success": result['success'],
         "results": results_data,  # Raw data for table
         "execution_time_ms": execution_time,
@@ -453,6 +510,10 @@ async def test_query(problem_id: str,
         "test_results": result.get('test_results', []),
         "error": result.get('error')
     }
+    
+    # Sanitize result to prevent JSON serialization errors
+    from .secure_execution import sanitize_json_data
+    return sanitize_json_data(response_data)
 
 
 @app.get("/api/user/progress")
@@ -466,7 +527,9 @@ async def get_user_progress(current_user: User = Depends(get_current_user),
                             detail=result.get('error',
                                               'Progress data not found'))
 
-    return result
+    # Sanitize result to prevent JSON serialization errors
+    from .secure_execution import sanitize_json_data
+    return sanitize_json_data(result)
 
 
 # Submission endpoints
@@ -567,7 +630,95 @@ def get_problem_solutions(problem_id: str, db: Session = Depends(get_db)):
          response_model=SolutionResponse,
          response_model_by_alias=True)
 def get_official_solution(problem_id: str, db: Session = Depends(get_db)):
-    """Get the official solution for a specific problem (returns single solution)"""
+    """Get the official solution for a specific problem - uses admin-configured source"""
+    from .s3_service import s3_service
+    import logging
+    from pathlib import Path
+    
+    logger = logging.getLogger(__name__)
+    
+    # First get the problem to check admin's solution source choice
+    problem = db.query(Problem).filter(Problem.id == problem_id).first()
+    if not problem:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Problem not found"
+        )
+    
+    logger.info(f"Problem {problem_id} solution_source: {problem.solution_source}")
+    
+    # Admin-controlled hybrid logic: check the solution_source field
+    if problem.solution_source == 's3' and problem.s3_solution_source:
+        logger.info(f"Using S3 solution source for problem {problem_id}")
+        
+        try:
+            # Extract S3 solution source info configured by admin
+            s3_solution_data = problem.s3_solution_source
+            bucket = s3_solution_data.get('bucket')
+            solution_key = s3_solution_data.get('key')
+            
+            if not bucket or not solution_key:
+                logger.warning(f"Invalid S3 solution source configuration for problem {problem_id}")
+                # Fall through to database solution
+            else:
+                logger.info(f"Looking for solution at s3://{bucket}/{solution_key}")
+                
+                # Validate and get info about the solution parquet file
+                try:
+                    validation_result = s3_service.validate_dataset_file(bucket, solution_key, 'solution')
+                    if validation_result and validation_result.get('success'):
+                        solution_row_count = validation_result.get('row_count', 0)
+                        sample_data = validation_result.get('sample_data', [])
+                        
+                        # Create a synthetic user for S3-based solutions
+                        synthetic_creator = UserResponse(
+                            id="system",
+                            username="system",
+                            email="system@platform.com",
+                            firstName="System",
+                            lastName="Generated",
+                            profileImageUrl=None
+                        )
+                        
+                        # Create solution content showing the expected results
+                        content_parts = [
+                            f"This problem uses S3-based validation against expected results with {solution_row_count} rows.",
+                            f"\nSolution data source: s3://{bucket}/{solution_key}",
+                            "\nExpected results structure (sample):"
+                        ]
+                        
+                        if sample_data:
+                            for i, row in enumerate(sample_data[:3]):  # Show first 3 rows
+                                content_parts.append(f"Row {i+1}: {row}")
+                        
+                        content = "\n".join(content_parts)
+                        
+                        solution_response = SolutionResponse(
+                            id=f"s3_{problem_id}",
+                            problemId=problem_id,
+                            createdBy="system",
+                            title="Official Solution (S3 Source)",
+                            content=content,
+                            sqlCode="-- This problem is validated against S3 parquet data\n-- Write your query to match the expected results structure shown above",
+                            isOfficial=True,
+                            createdAt=problem.created_at,
+                            updatedAt=problem.updated_at,
+                            creator=synthetic_creator
+                        )
+                        
+                        logger.info(f"Successfully created solution response from S3 source for problem {problem_id}")
+                        return solution_response
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to validate S3 solution source for problem {problem_id}: {e}")
+                    # Fall through to database solution
+                    
+        except Exception as e:
+            logger.warning(f"Failed to process S3 solution source for problem {problem_id}: {e}")
+            # Fall through to database solution
+            
+    # Use database-based solution (either by admin choice or fallback)
+    logger.info(f"Using database-based solution lookup for problem {problem_id}")
     solution = db.query(Solution).options(joinedload(Solution.creator)).filter(
         Solution.problem_id == problem_id,
         Solution.is_official == True
@@ -598,13 +749,28 @@ def get_leaderboard(limit: Optional[int] = Query(50),
 @app.get("/api/community/posts",
          response_model=List[CommunityPostResponse],
          response_model_by_alias=True)
-def get_community_posts(db: Session = Depends(get_db)):
+def get_community_posts(current_user: Optional[User] = Depends(get_current_user_optional),
+                        db: Session = Depends(get_db)):
     posts = db.query(CommunityPost).options(
         joinedload(CommunityPost.user),
         joinedload(CommunityPost.problem)
     ).order_by(desc(CommunityPost.created_at)).all()
 
-    return [CommunityPostResponse.from_orm(post) for post in posts]
+    # Filter out posts related to premium problems for non-premium users
+    filtered_posts = []
+    for post in posts:
+        # If post is not related to any problem, include it
+        if not post.problem:
+            filtered_posts.append(post)
+        # If post is related to a non-premium problem, include it
+        elif not post.problem.premium:
+            filtered_posts.append(post)
+        # If post is related to a premium problem, only include it if user has premium access
+        elif current_user and current_user.premium:
+            filtered_posts.append(post)
+        # Otherwise, exclude the post
+
+    return [CommunityPostResponse.from_orm(post) for post in filtered_posts]
 
 
 @app.post("/api/community/posts",
@@ -613,6 +779,15 @@ def get_community_posts(db: Session = Depends(get_db)):
 def create_community_post(post_data: CommunityPostCreate,
                           current_user: User = Depends(get_current_user),
                           db: Session = Depends(get_db)):
+    # Check if user is trying to create a post about a premium problem
+    if post_data.problem_id:
+        problem = db.query(Problem).filter(Problem.id == post_data.problem_id).first()
+        if problem and problem.premium and not current_user.premium:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Premium subscription required to create discussions for this problem"
+            )
+
     post = CommunityPost(user_id=current_user.id,
                          content=post_data.content,
                          code_snippet=post_data.code_snippet,
@@ -633,6 +808,20 @@ def create_community_post(post_data: CommunityPostCreate,
 def like_post(post_id: str,
               current_user: User = Depends(get_current_user),
               db: Session = Depends(get_db)):
+    # Check if post is related to a premium problem and user has access
+    post = db.query(CommunityPost).options(joinedload(CommunityPost.problem)).filter(
+        CommunityPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+    
+    # Check premium access for posts related to premium problems
+    if post.problem and post.problem.premium and not current_user.premium:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Premium subscription required to interact with this discussion"
+        )
+
     # Check if already liked
     existing_like = db.query(PostLike).filter(
         and_(PostLike.user_id == current_user.id,
@@ -646,10 +835,8 @@ def like_post(post_id: str,
     like = PostLike(user_id=current_user.id, post_id=post_id)
     db.add(like)
 
-    # Update post likes count
-    post = db.query(CommunityPost).filter(CommunityPost.id == post_id).first()
-    if post:
-        post.likes = (post.likes or 0) + 1
+    # Update post likes count (we already have the post from above)
+    post.likes = (post.likes or 0) + 1
 
     db.commit()
     return {"message": "Post liked successfully"}
@@ -659,6 +846,20 @@ def like_post(post_id: str,
 def unlike_post(post_id: str,
                 current_user: User = Depends(get_current_user),
                 db: Session = Depends(get_db)):
+    # Check if post is related to a premium problem and user has access
+    post = db.query(CommunityPost).options(joinedload(CommunityPost.problem)).filter(
+        CommunityPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+    
+    # Check premium access for posts related to premium problems
+    if post.problem and post.problem.premium and not current_user.premium:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Premium subscription required to interact with this discussion"
+        )
+
     # Find and delete like
     like = db.query(PostLike).filter(
         and_(PostLike.user_id == current_user.id,
@@ -670,10 +871,8 @@ def unlike_post(post_id: str,
 
     db.delete(like)
 
-    # Update post likes count
-    post = db.query(CommunityPost).filter(CommunityPost.id == post_id).first()
-    if post:
-        post.likes = max(0, (post.likes or 0) - 1)
+    # Update post likes count (we already have the post from above)
+    post.likes = max(0, (post.likes or 0) - 1)
 
     db.commit()
     return {"message": "Post unliked successfully"}
@@ -682,7 +881,23 @@ def unlike_post(post_id: str,
 @app.get("/api/community/posts/{post_id}/comments",
          response_model=List[PostCommentResponse],
          response_model_by_alias=True)
-def get_post_comments(post_id: str, db: Session = Depends(get_db)):
+def get_post_comments(post_id: str, 
+                      current_user: Optional[User] = Depends(get_current_user_optional),
+                      db: Session = Depends(get_db)):
+    # Check if post is related to a premium problem and user has access
+    post = db.query(CommunityPost).options(joinedload(CommunityPost.problem)).filter(
+        CommunityPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+    
+    # Check premium access for posts related to premium problems
+    if post.problem and post.problem.premium and (not current_user or not current_user.premium):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Premium subscription required to view comments on this discussion"
+        )
+
     # Get all comments for the post
     all_comments = db.query(PostComment).options(joinedload(
         PostComment.user)).filter(PostComment.post_id == post_id).order_by(
@@ -717,6 +932,20 @@ def create_post_comment(post_id: str,
                         comment_data: PostCommentCreate,
                         current_user: User = Depends(get_current_user),
                         db: Session = Depends(get_db)):
+    # Check if post is related to a premium problem and user has access
+    post = db.query(CommunityPost).options(joinedload(CommunityPost.problem)).filter(
+        CommunityPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+    
+    # Check premium access for posts related to premium problems
+    if post.problem and post.problem.premium and not current_user.premium:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Premium subscription required to comment on this discussion"
+        )
+
     # Validate parent comment exists if parent_id is provided
     if comment_data.parent_id:
         parent_comment = db.query(PostComment).filter(
@@ -770,9 +999,23 @@ def get_problem_solutions_public(
 def get_problem_discussions(
     problem_id: str,
     limit: int = Query(20, ge=1, le=100),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
     """Get discussions for a specific problem"""
+    # First check if the problem exists and if it's premium
+    problem = db.query(Problem).filter(Problem.id == problem_id).first()
+    if not problem:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Problem not found"
+        )
+    
+    # For premium problems with non-premium users, return empty list
+    # The frontend will handle showing the locked state UI
+    if problem.premium and (not current_user or not current_user.premium):
+        return []
+    
     posts = db.query(CommunityPost).options(
         joinedload(CommunityPost.user)
     ).filter(
@@ -797,6 +1040,13 @@ def create_problem_discussion(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Problem not found"
+        )
+    
+    # Check premium access for premium problems
+    if problem.premium and not current_user.premium:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Premium subscription required to create discussions for this problem"
         )
     
     # Create discussion post

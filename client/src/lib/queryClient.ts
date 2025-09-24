@@ -1,10 +1,29 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+// API Base URL - Use proxy in development, environment variable in production
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
     throw new Error(`${res.status}: ${text}`);
   }
+}
+
+function getFullUrl(url: string | unknown): string {
+  // Ensure url is a string
+  const urlString = String(url);
+  
+  // If URL is already absolute, return as-is
+  if (urlString.startsWith('http')) {
+    return urlString;
+  }
+  // If URL already starts with /api, return as-is (avoid double /api/api)
+  if (urlString.startsWith('/api')) {
+    return urlString;
+  }
+  // Convert relative URLs to absolute using API base URL
+  return `${API_BASE_URL}${urlString.startsWith('/') ? urlString : `/${urlString}`}`;
 }
 
 export async function apiRequest(
@@ -13,16 +32,27 @@ export async function apiRequest(
   data?: unknown | undefined,
 ): Promise<Response> {
   const token = localStorage.getItem("auth_token");
-  const headers: Record<string, string> = data ? { "Content-Type": "application/json" } : {};
+  const headers: Record<string, string> = {};
   
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(url, {
+  const fullUrl = getFullUrl(url);
+  
+  let body: string | FormData | undefined;
+  if (data instanceof FormData) {
+    // For FormData, don't set Content-Type - let the browser set it with boundary
+    body = data;
+  } else if (data) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(data);
+  }
+  
+  const res = await fetch(fullUrl, {
     method,
     headers,
-    body: data ? JSON.stringify(data) : undefined,
+    body,
     credentials: "include",
   });
 
@@ -43,7 +73,10 @@ export const getQueryFn: <T>(options: {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const res = await fetch(queryKey.join("/") as string, {
+    const url = queryKey.join("/") as string;
+    const fullUrl = getFullUrl(url);
+
+    const res = await fetch(fullUrl, {
       headers,
       credentials: "include",
     });

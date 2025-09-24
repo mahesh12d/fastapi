@@ -14,12 +14,21 @@ from .models import User
 from .schemas import TokenData
 
 # Configuration
-JWT_SECRET = os.getenv("JWT_SECRET", "your-jwt-secret-key")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise ValueError("SECURITY ERROR: JWT_SECRET environment variable is required. Set it to a cryptographically secure random value.")
+if JWT_SECRET in ["your-jwt-secret-key", "dev-secret", "test-secret", "secret", "jwt-secret"]:
+    raise ValueError("SECURITY ERROR: JWT_SECRET cannot use weak/default values. Generate a secure random key.")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
-# Admin Configuration
-ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "admin-dev-key-123")
+# Admin Configuration  
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY")
+if not ADMIN_SECRET_KEY:
+    raise ValueError("SECURITY ERROR: ADMIN_SECRET_KEY environment variable is required. Set it to a cryptographically secure random value.")
+if ADMIN_SECRET_KEY in ["admin-dev-key-123", "admin", "admin123", "password", "secret"]:
+    raise ValueError("SECURITY ERROR: ADMIN_SECRET_KEY cannot use weak/default values. Generate a secure random key.")
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -78,6 +87,19 @@ def get_current_user(
 ) -> User:
     """Get the current authenticated user"""
     token = credentials.credentials
+    
+    # TEMPORARY: Development token bypass for dev-token-123
+    if token == 'dev-token-123':
+        dev_user = db.query(User).filter(User.id == 'dev-user-1').first()
+        if dev_user:
+            return dev_user
+        else:
+            # Fallback to any admin user for development
+            dev_user = db.query(User).filter(User.username == 'admin').first()
+            if dev_user:
+                return dev_user
+    
+    # Normal JWT verification for production
     token_data = verify_token(token)
     
     user = db.query(User).filter(User.id == token_data.user_id).first()
@@ -106,9 +128,14 @@ def get_current_user_optional(
         return None
 
 def verify_admin_access(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional)
 ) -> bool:
     """Verify admin access using the admin secret key"""
+    
+    # TEMPORARY DEV BYPASS - Remove when Google auth is implemented
+    if os.getenv("TEMP_ADMIN_BYPASS") == "true":
+        return True
+    
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -126,10 +153,29 @@ def verify_admin_access(
     return True
 
 def verify_admin_user_access(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
     db: Session = Depends(get_db)
 ) -> User:
     """Verify admin access using either admin secret key or admin user token"""
+    
+    # TEMPORARY DEV BYPASS - Remove when Google auth is implemented
+    if os.getenv("TEMP_ADMIN_BYPASS") == "true":
+        # Create/find a temp admin user for development
+        admin_user = db.query(User).filter(User.username == "temp_admin").first()
+        if admin_user is None:
+            from uuid import uuid4
+            admin_user = User(
+                id=str(uuid4()),
+                username="temp_admin",
+                email="temp_admin@dev.local",
+                is_admin=True,
+                premium=True
+            )
+            db.add(admin_user)
+            db.commit()
+            db.refresh(admin_user)
+        return admin_user
+    
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

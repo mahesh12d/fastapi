@@ -1,4 +1,5 @@
 import { useState, useEffect, createContext, useContext } from 'react';
+import { authApi } from '@/lib/auth';
 
 interface User {
   id: string;
@@ -25,35 +26,62 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // TEMPORARY: Mock user for development purposes (using real user from database)
-  const mockUser: User = {
-    id: '880be3c3-e093-4274-9294-d20c5f08c583',
-    username: 'demo12s',
-    email: 'demo@demo.com',
-    firstName: 'demo',
-    lastName: 'deom',
-    profileImageUrl: undefined,
-    xp: 500,
-    level: 'SQL Trainee',
-    problemsSolved: 5,
-    premium: false,
-  };
-
-  const [user, setUser] = useState<User | null>(mockUser);
-  const [token, setToken] = useState<string | null>('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI4ODBiZTNjMy1lMDkzLTQyNzQtOTI5NC1kMjBjNWYwOGM1ODMiLCJ1c2VybmFtZSI6ImRlbW8xMnMiLCJleHAiOjE3NTg2NDQxMzN9.mk2sDUt5sTx89PZTqLTHV4m03C4druJATA_asBCq0SA');
-  const [isLoading, setIsLoading] = useState(false); // Set to false to skip loading
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // TEMPORARY: Set up mock authentication for development
-    const validToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI4ODBiZTNjMy1lMDkzLTQyNzQtOTI5NC1kMjBjNWYwOGM1ODMiLCJ1c2VybmFtZSI6ImRlbW8xMnMiLCJleHAiOjE3NTg2NDQxMzN9.mk2sDUt5sTx89PZTqLTHV4m03C4druJATA_asBCq0SA';
-    const mockUserData = JSON.stringify(mockUser);
-    
-    // Set the valid token and user in localStorage for API requests
-    localStorage.setItem('auth_token', validToken);
-    localStorage.setItem('auth_user', mockUserData);
-    
-    setIsLoading(false);
-  }, [mockUser]);
+    const initializeAuth = async () => {
+      // Development bypass - automatically log in as a fake user
+      if (import.meta.env.DEV) {
+        const fakeUser: User = {
+          id: 'dev-user-1',
+          username: 'developer',
+          email: 'dev@sqlgym.dev',
+          firstName: 'Dev',
+          lastName: 'User',
+          xp: 1000,
+          level: 'Advanced',
+          problemsSolved: 25,
+          premium: true
+        };
+        const fakeToken = 'dev-token-123';
+        
+        setUser(fakeUser);
+        setToken(fakeToken);
+        localStorage.setItem('auth_token', fakeToken);
+        localStorage.setItem('auth_user', JSON.stringify(fakeUser));
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        // Always attempt to fetch current user data from backend
+        // This supports both token-based and cookie-based authentication
+        const userData = await authApi.getCurrentUser();
+        setUser(userData);
+        
+        // Get token from localStorage if available (for token-based auth)
+        const storedToken = localStorage.getItem('auth_token');
+        if (storedToken) {
+          setToken(storedToken);
+        }
+        
+        // Update localStorage with fresh user data
+        localStorage.setItem('auth_user', JSON.stringify(userData));
+      } catch (error) {
+        // Authentication failed - clear all auth state
+        setToken(null);
+        setUser(null);
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initializeAuth();
+  }, []);
 
   const login = (newToken: string, newUser: User) => {
     setToken(newToken);

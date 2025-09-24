@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useState, useEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -10,17 +10,20 @@ import {
 
 interface DatabaseSelectorProps {
   className?: string;
+  problem?: any;
 }
 
-const DatabaseSelector = memo(function DatabaseSelector({ className }: DatabaseSelectorProps) {
-  const [selectedDatabase, setSelectedDatabase] = useState("PostgreSQL 14");
+const DatabaseSelector = memo(function DatabaseSelector({ className, problem }: DatabaseSelectorProps) {
+  // Always use DuckDB to prevent access to main database
+  const [selectedDatabase, setSelectedDatabase] = useState("DuckDB");
+
+  // Always keep DuckDB selected regardless of problem data
+  useEffect(() => {
+    setSelectedDatabase("DuckDB");
+  }, [problem]);
 
   const databases = [
-    "PostgreSQL 14",
-    "PostgreSQL 15", 
-    "PostgreSQL 16",
-    "MySQL 8.0",
-    "SQLite"
+    "DuckDB"
   ];
 
   return (

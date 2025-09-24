@@ -81,7 +81,7 @@ def parse_tabular_data(tabular_string: str) -> list:
 
 def run_schema_migrations():
     """
-    Idempotent schema migration to handle JSONB question field transition
+    Idempotent schema migration to handle JSONB question field transition and S3 answer sources
     """
     with engine.begin() as conn:
         inspector = inspect(engine)
@@ -140,6 +140,40 @@ def run_schema_migrations():
             # Make question NOT NULL
             conn.execute(text("ALTER TABLE problems ALTER COLUMN question SET NOT NULL"))
             print("Schema migration completed successfully!")
+        
+        # Add expected_display column if it doesn't exist
+        if 'expected_display' not in columns:
+            print("Adding expected_display JSONB column to problems table...")
+            conn.execute(text("ALTER TABLE problems ADD COLUMN expected_display JSONB NULL"))
+            
+            # Backfill expected_display from expected_output for existing problems
+            print("Backfilling expected_display from expected_output for existing problems...")
+            conn.execute(text("""
+                UPDATE problems 
+                SET expected_display = expected_output 
+                WHERE expected_display IS NULL AND expected_output IS NOT NULL
+            """))
+            print("expected_display column added and backfilled successfully!")
+        
+        # Add s3_data_source column if it doesn't exist
+        if 's3_data_source' not in columns:
+            print("Adding s3_data_source JSONB column to problems table...")
+            conn.execute(text("ALTER TABLE problems ADD COLUMN s3_data_source JSONB NULL"))
+            print("S3 data source migration completed successfully!")
+        
+        # Migrate test_cases table for S3 answer sources
+        if 'test_cases' in inspector.get_table_names():
+            test_case_columns = [col['name'] for col in inspector.get_columns('test_cases')]
+            
+            # Add S3 answer source fields if they don't exist
+            if 'expected_output_source' not in test_case_columns:
+                print("Adding S3 answer source fields to test_cases table...")
+                
+                conn.execute(text("ALTER TABLE test_cases ADD COLUMN expected_output_source JSONB NULL"))
+                conn.execute(text("ALTER TABLE test_cases ADD COLUMN preview_expected_output JSONB NULL"))
+                conn.execute(text("ALTER TABLE test_cases ADD COLUMN display_limit INTEGER DEFAULT 10"))
+                
+                print("S3 answer source migration completed successfully!")
         else:
             # Check if we need to fix existing data with incorrect expectedOutput format
             result = conn.execute(text("""
@@ -186,6 +220,58 @@ def run_schema_migrations():
             print("Premium column added to users table")
         
         print("Premium feature migration completed!")
+        
+        # S3 Answer Source migrations for test_cases table
+        print("Checking S3 answer source columns for test_cases table...")
+        
+        # Check if test_cases table exists
+        if 'test_cases' in inspector.get_table_names():
+            test_cases_columns = [col['name'] for col in inspector.get_columns('test_cases')]
+            
+            # Add expected_output_source column for S3 configuration
+            if 'expected_output_source' not in test_cases_columns:
+                print("Adding expected_output_source column to test_cases table...")
+                conn.execute(text("ALTER TABLE test_cases ADD COLUMN expected_output_source JSONB NULL"))
+                print("expected_output_source column added to test_cases table")
+            
+            # Add preview_expected_output column for limited frontend display
+            if 'preview_expected_output' not in test_cases_columns:
+                print("Adding preview_expected_output column to test_cases table...")
+                conn.execute(text("ALTER TABLE test_cases ADD COLUMN preview_expected_output JSONB NULL"))
+                print("preview_expected_output column added to test_cases table")
+            
+            # Add display_limit column for preview row count
+            if 'display_limit' not in test_cases_columns:
+                print("Adding display_limit column to test_cases table...")
+                conn.execute(text("ALTER TABLE test_cases ADD COLUMN display_limit INTEGER DEFAULT 10"))
+                print("display_limit column added to test_cases table")
+        else:
+            print("test_cases table doesn't exist yet, S3 columns will be created by create_tables()")
+        
+        print("S3 answer source migration completed!")
+        
+        # Master solution migration - add master_solution column for better admin UX
+        print("Checking master_solution column...")
+        columns = [col['name'] for col in inspector.get_columns('problems')]  # Refresh column list
+        
+        if 'master_solution' not in columns:
+            print("Adding master_solution JSONB column to problems table...")
+            conn.execute(text("ALTER TABLE problems ADD COLUMN master_solution JSONB NULL"))
+            print("master_solution column added to problems table")
+            
+            # Backfill existing problems: copy expectedOutput from question field to master_solution
+            print("Backfilling master_solution from existing question.expectedOutput data...")
+            result = conn.execute(text("""
+                UPDATE problems 
+                SET master_solution = question->'expectedOutput'
+                WHERE master_solution IS NULL 
+                  AND question->'expectedOutput' IS NOT NULL
+                  AND jsonb_typeof(question->'expectedOutput') = 'array'
+            """))
+            updated_count = result.rowcount
+            print(f"Backfilled master_solution for {updated_count} existing problems")
+        
+        print("Master solution migration completed!")
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -199,6 +285,9 @@ def create_tables():
     # Then create all tables
     Base.metadata.create_all(bind=engine)
     print("SUCCESS: All database tables created successfully")
+    
+    # Run schema migrations (always run for idempotent migrations)
+    run_schema_migrations()
     
     # Initialize enhanced schema with sample data
     initialize_enhanced_schema()

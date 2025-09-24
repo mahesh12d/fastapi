@@ -34,6 +34,45 @@ class CamelCaseModel(BaseModel):
         from_attributes=True
     )
 
+# S3 Answer Source schemas
+class S3AnswerSource(BaseModel):
+    """Schema for S3 answer source configuration"""
+    bucket: str
+    key: str  # S3 object key (file path)
+    format: str  # csv, json, parquet
+    etag: Optional[str] = None  # For cache validation
+    last_modified: Optional[datetime] = None
+    description: Optional[str] = None
+    
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
+
+# S3 Dataset Source schemas (for problem datasets)
+class S3DatasetSource(BaseModel):
+    """Schema for S3 dataset source configuration"""
+    bucket: str
+    key: str  # S3 object key (file path) - must be .parquet
+    table_name: str  # Table name for DuckDB
+    description: Optional[str] = None
+    etag: Optional[str] = None  # For cache validation
+    
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
+
+class MultiTableS3Source(BaseModel):
+    """Schema for multiple S3 dataset sources in a single question"""
+    datasets: List[S3DatasetSource]  # List of S3 dataset configurations
+    description: Optional[str] = None  # Overall description of the multi-table setup
+    
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
+
 # User schemas
 class UserBase(CamelCaseModel):
     username: str
@@ -78,7 +117,7 @@ class TableData(BaseModel):
 class QuestionData(BaseModel):
     description: str
     tables: List[TableData] = []
-    expected_output: List[dict] = Field(..., alias="expectedOutput")
+    # Note: expected_output moved to top-level ProblemBase for better data architecture
     
     model_config = ConfigDict(
         populate_by_name=True,
@@ -88,12 +127,18 @@ class QuestionData(BaseModel):
 # Problem schemas
 class ProblemBase(CamelCaseModel):
     title: str
-    question: QuestionData  # JSONB field containing description, schema, expectedOutput
+    question: QuestionData  # JSONB field containing description, schema
     difficulty: str
     tags: List[str] = []
     company: Optional[str] = None
     hints: List[str] = []
     premium: Optional[bool] = None  # null = free, True = premium
+    master_solution: Optional[List[dict]] = Field(default=None, alias="masterSolution")  # Complete expected output for validation (admin only)
+    expected_display: Optional[List[dict]] = Field(default=None, alias="expectedDisplay")  # Expected output for user display
+    expected_output: Optional[List[dict]] = Field(default=None, alias="expectedOutput")  # Legacy field - use master_solution instead
+    parquet_data_source: Optional[Dict[str, Any]] = None  # JSONB field for DuckDB parquet data (legacy)
+    s3_data_source: Optional[S3DatasetSource] = None  # S3 dataset source configuration (legacy)
+    s3_datasets: Optional[List[S3DatasetSource]] = None  # Multiple S3 dataset sources configuration
 
 class ProblemCreate(ProblemBase):
     pass
@@ -208,12 +253,17 @@ class TestCaseBase(CamelCaseModel):
     name: str
     description: Optional[str] = None
     input_data: Dict[str, Any]
-    expected_output: List[Dict[str, Any]]
+    expected_output: List[Dict[str, Any]]  # Backward compatibility - full dataset or fallback
     validation_rules: Dict[str, Any] = {}
     is_hidden: bool = False
     order_index: int = 0
     timeout_seconds: int = 30
     memory_limit_mb: int = 256
+    
+    # S3 Answer Source Support
+    expected_output_source: Optional[S3AnswerSource] = None  # S3 source for full dataset
+    preview_expected_output: Optional[List[Dict[str, Any]]] = None  # Limited rows for frontend
+    display_limit: int = 10  # Number of rows to show in preview
 
 class TestCaseCreate(TestCaseBase):
     pass
@@ -244,7 +294,7 @@ class ProblemSchemaResponse(ProblemSchemaBase):
 class ExecutionResultBase(CamelCaseModel):
     submission_id: str
     test_case_id: str
-    user_sandbox_id: str
+    # user_sandbox_id removed - PostgreSQL sandbox functionality removed
     status: ExecutionStatus
     execution_time_ms: Optional[int] = None
     memory_used_mb: Optional[float] = None
@@ -264,26 +314,7 @@ class ExecutionResultResponse(ExecutionResultBase):
     id: str
     created_at: datetime
 
-# User sandbox schemas
-class UserSandboxBase(CamelCaseModel):
-    user_id: str
-    problem_id: str
-    database_name: str
-    connection_string: str
-    status: SandboxStatus = SandboxStatus.ACTIVE
-    max_execution_time_seconds: int = 30
-    max_memory_mb: int = 256
-    max_connections: int = 5
-    expires_at: datetime
-
-class UserSandboxCreate(UserSandboxBase):
-    pass
-
-class UserSandboxResponse(UserSandboxBase):
-    id: str
-    created_at: datetime
-    last_accessed_at: datetime
-    cleanup_scheduled_at: Optional[datetime] = None
+# User sandbox schemas removed - PostgreSQL sandbox functionality removed
 
 # User progress schemas
 class UserProgressBase(CamelCaseModel):

@@ -1,10 +1,11 @@
-import { memo, useState, useCallback } from "react";
+import { memo, useState, useCallback, useEffect } from "react";
 import { Lightbulb } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import TableDisplay from "@/components/table-display";
+import { queryClient } from "@/lib/queryClient";
 
 interface Problem {
   question?: {
@@ -19,14 +20,23 @@ interface Problem {
 interface ProblemDescriptionTabProps {
   problem?: Problem;
   className?: string;
+  problemId?: string;
 }
 
 const ProblemDescriptionTab = memo(function ProblemDescriptionTab({
   problem,
   className,
+  problemId,
 }: ProblemDescriptionTabProps) {
   const [showHint, setShowHint] = useState(false);
   const [hintIndex, setHintIndex] = useState(0);
+
+  // Force cache invalidation on mount to ensure fresh data
+  useEffect(() => {
+    if (problemId) {
+      queryClient.invalidateQueries({ queryKey: ["/api/problems", problemId] });
+    }
+  }, [problemId]);
 
   const handleHintClick = useCallback(() => {
     if (!showHint) {
@@ -152,7 +162,7 @@ const ProblemDescriptionTab = memo(function ProblemDescriptionTab({
       {/* Structured Table Display */}
       <TableDisplay
         tables={problem?.question?.tables || []}
-        expectedOutput={problem?.question?.expectedOutput || []}
+        expectedOutput={problem?.expectedDisplay || problem?.question?.expectedOutput || []}
       />
 
       {/* Hints Section */}
@@ -218,33 +228,5 @@ const ProblemDescriptionTab = memo(function ProblemDescriptionTab({
   );
 });
 
-const executeQuery = async (query: string) => {
-  setIsLoading(true);
-
-  try {
-    const response = await fetch(`/api/problems/${problemId}/test`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ query }),
-    });
-
-    const data = await response.json();
-
-    // Set the result - OutputPanel will handle console display
-    setQueryResult(data);
-  } catch (error) {
-    console.error("Query execution failed:", error);
-    setQueryResult({
-      success: false,
-      console_output: `ERROR: ${error.message}`,
-      error: error.message,
-    });
-  } finally {
-    setIsLoading(false);
-  }
-};
 
 export default ProblemDescriptionTab;

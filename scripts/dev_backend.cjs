@@ -48,6 +48,20 @@ async function startBackend() {
   process.env.LC_ALL = 'C.UTF-8';
   process.env.LANG = 'C.UTF-8';
   
+  // TEMPORARY: Enable admin bypass for development - REMOVE when Google auth is implemented
+  process.env.TEMP_ADMIN_BYPASS = 'true';
+  console.log('🔓 TEMPORARY: Admin panel bypass enabled for development');
+  
+  // Generate temporary secure keys for development if not set
+  if (!process.env.JWT_SECRET) {
+    process.env.JWT_SECRET = require('crypto').randomBytes(32).toString('hex');
+    console.log('🔐 Generated temporary JWT_SECRET for development');
+  }
+  if (!process.env.ADMIN_SECRET_KEY) {
+    process.env.ADMIN_SECRET_KEY = require('crypto').randomBytes(32).toString('hex');
+    console.log('🔐 Generated temporary ADMIN_SECRET_KEY for development');
+  }
+  
   console.log(`🐍 Using ${useUv ? 'uv' : 'pip'} for Python dependency management`);
   
   if (useUv) {
@@ -87,6 +101,17 @@ async function startBackend() {
     
     if (installResult.status !== 0) {
       console.error('❌ pip install failed');
+      process.exit(1);
+    }
+    
+    console.log('📦 Installing additional packages...');
+    const additionalResult = spawnSync(pythonCmd, ['-m', 'pip', 'install', '--break-system-packages', 'duckdb', 'fsspec', 'pyarrow', 'pandas', 'numpy'], {
+      stdio: 'inherit',
+      cwd: process.cwd()
+    });
+    
+    if (additionalResult.status !== 0) {
+      console.error('❌ Additional packages install failed');
       process.exit(1);
     }
     
