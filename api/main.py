@@ -13,7 +13,8 @@ from datetime import timedelta
 import random
 
 from .database import get_db, create_tables
-from .models import User, Problem, Submission, CommunityPost, PostLike, PostComment, Solution
+from .models import (User, Problem, Submission, CommunityPost, PostLike, PostComment, Solution,
+                     ProblemInteraction, ProblemSession, Base)
 from .schemas import (UserCreate, UserResponse, UserLogin, LoginResponse,
                       RegisterResponse, ProblemResponse, SubmissionCreate,
                       SubmissionResponse, CommunityPostCreate,
@@ -24,6 +25,66 @@ from .auth import (get_password_hash, verify_password, create_access_token,
 from .secure_execution import secure_executor
 from .sandbox_routes import sandbox_router
 from .admin_routes import admin_router
+
+# Helper function for time tracking
+def track_first_query(user_id: str, problem_id: str, db: Session):
+    """Track when user first runs a query on a problem"""
+    # Check if session already exists
+    session = db.query(ProblemSession).filter(
+        ProblemSession.user_id == user_id,
+        ProblemSession.problem_id == problem_id
+    ).first()
+    
+    if not session:
+        # Create new session
+        session = ProblemSession(
+            user_id=user_id,
+            problem_id=problem_id,
+            first_query_at=func.now()
+        )
+        db.add(session)
+        db.commit()
+    elif session.first_query_at is None:
+        # Update existing session with first query time
+        session.first_query_at = func.now()
+        db.commit()
+
+def track_successful_submission(user_id: str, problem_id: str, db: Session):
+    """Track when user successfully submits a solution and calculate total time"""
+    session = db.query(ProblemSession).filter(
+        ProblemSession.user_id == user_id,
+        ProblemSession.problem_id == problem_id
+    ).first()
+    
+    from datetime import datetime
+    now = datetime.now()
+    
+    if not session:
+        # Create new session for direct submissions (no prior testing)
+        session = ProblemSession(
+            user_id=user_id,
+            problem_id=problem_id,
+            first_query_at=now,  # Backfill with submission time
+            completed_at=now,
+            total_time_spent_seconds=0  # Immediate submission
+        )
+        db.add(session)
+        db.commit()
+    elif session.completed_at is None:
+        # Update existing session with completion
+        session.completed_at = now
+        
+        # Calculate total time spent if first_query_at exists
+        if session.first_query_at:
+            time_diff = session.completed_at - session.first_query_at
+            session.total_time_spent_seconds = int(time_diff.total_seconds())
+        else:
+            # Backfill missing first_query_at
+            session.first_query_at = now
+            session.total_time_spent_seconds = 0
+        
+        session.updated_at = func.now()
+        db.commit()
 
 # Create FastAPI app
 app = FastAPI(title="SQLGym API",
@@ -332,6 +393,27 @@ def get_problems(
         problem_data.is_user_solved = bool(
             is_user_solved) if current_user else False
         
+        # Add bookmark and like status for authenticated users
+        if current_user:
+            # Check if user has interactions with this problem
+            interaction = db.query(ProblemInteraction).filter(
+                ProblemInteraction.user_id == current_user.id,
+                ProblemInteraction.problem_id == problem.id
+            ).first()
+            
+            problem_data.is_bookmarked = interaction.bookmark if interaction else False
+            problem_data.is_liked = interaction.upvote if interaction else False
+        else:
+            problem_data.is_bookmarked = False
+            problem_data.is_liked = False
+        
+        # Get total likes count for this problem
+        likes_count = db.query(ProblemInteraction).filter(
+            ProblemInteraction.problem_id == problem.id,
+            ProblemInteraction.upvote == True
+        ).count()
+        problem_data.likes_count = likes_count
+        
         # Use expected_display for user-facing expected output (separate from validation)
         if hasattr(problem, 'expected_display') and problem.expected_display is not None:
             problem_data.expected_output = problem.expected_display
@@ -358,6 +440,276 @@ def get_problems(
         problems.append(problem_data)
 
     return problems
+
+
+# Migration endpoint (temporary - for migrating to unified interactions)
+@app.post("/api/admin/migrate-interactions")
+def migrate_to_unified_interactions(db: Session = Depends(get_db)):
+    """Admin endpoint to migrate bookmark and like data to unified ProblemInteraction table"""
+    try:
+        # Create the new table if it doesn't exist
+        Base.metadata.create_all(bind=db.bind)
+        
+        # Get all existing bookmarks and likes (legacy tables may not exist)
+        try:
+            # Try to import old models if they still exist in database
+            from sqlalchemy import text
+            bookmarks = []
+            likes = []
+            
+            # Check if old tables still exist before querying
+            result = db.execute(text("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'problem_bookmarks')"))
+            if result.scalar():
+                bookmarks = db.execute(text("SELECT user_id, problem_id, created_at FROM problem_bookmarks")).fetchall()
+            
+            result = db.execute(text("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'problem_likes')"))
+            if result.scalar():
+                likes = db.execute(text("SELECT user_id, problem_id, created_at FROM problem_likes")).fetchall()
+                
+        except Exception as e:
+            print(f"Legacy tables not found or error accessing them: {e}")
+            bookmarks = []
+            likes = []
+        
+        # Create a dictionary to track user-problem combinations
+        interactions = {}
+        
+        # Process bookmarks
+        for bookmark in bookmarks:
+            key = (bookmark.user_id, bookmark.problem_id)
+            if key not in interactions:
+                interactions[key] = {
+                    'user_id': bookmark.user_id,
+                    'problem_id': bookmark.problem_id,
+                    'bookmark': True,
+                    'upvote': False,
+                    'downvote': False,
+                    'created_at': bookmark.created_at
+                }
+            else:
+                interactions[key]['bookmark'] = True
+                if bookmark.created_at < interactions[key]['created_at']:
+                    interactions[key]['created_at'] = bookmark.created_at
+        
+        # Process likes (convert to upvotes)
+        for like in likes:
+            key = (like.user_id, like.problem_id)
+            if key not in interactions:
+                interactions[key] = {
+                    'user_id': like.user_id,
+                    'problem_id': like.problem_id,
+                    'bookmark': False,
+                    'upvote': True,
+                    'downvote': False,
+                    'created_at': like.created_at
+                }
+            else:
+                interactions[key]['upvote'] = True
+                if like.created_at < interactions[key]['created_at']:
+                    interactions[key]['created_at'] = like.created_at
+        
+        # Insert into ProblemInteraction table
+        migrated_count = 0
+        for interaction_data in interactions.values():
+            # Check if this interaction already exists
+            existing = db.query(ProblemInteraction).filter(
+                ProblemInteraction.user_id == interaction_data['user_id'],
+                ProblemInteraction.problem_id == interaction_data['problem_id']
+            ).first()
+            
+            if not existing:
+                new_interaction = ProblemInteraction(
+                    user_id=interaction_data['user_id'],
+                    problem_id=interaction_data['problem_id'],
+                    bookmark=interaction_data['bookmark'],
+                    upvote=interaction_data['upvote'],
+                    downvote=interaction_data['downvote'],
+                    created_at=interaction_data['created_at']
+                )
+                db.add(new_interaction)
+                migrated_count += 1
+        
+        db.commit()
+        
+        # Verify migration
+        total_interactions = db.query(ProblemInteraction).count()
+        bookmark_count = db.query(ProblemInteraction).filter(ProblemInteraction.bookmark == True).count()
+        upvote_count = db.query(ProblemInteraction).filter(ProblemInteraction.upvote == True).count()
+        
+        return {
+            "success": True,
+            "message": f"Successfully migrated {migrated_count} interactions",
+            "stats": {
+                "total_interactions": total_interactions,
+                "with_bookmarks": bookmark_count,
+                "with_upvotes": upvote_count,
+                "original_bookmarks": len(bookmarks),
+                "original_likes": len(likes)
+            }
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                          detail=f"Migration failed: {str(e)}")
+
+# Unified Problem Interaction endpoints (bookmark, upvote, downvote)
+@app.post("/api/problems/{problem_id}/bookmark")
+def toggle_bookmark(problem_id: str,
+                   current_user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Toggle bookmark status for a problem"""
+    # Check if problem exists
+    problem = db.query(Problem).filter(Problem.id == problem_id).first()
+    if not problem:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Problem not found")
+    
+    # Get or create interaction record
+    interaction = db.query(ProblemInteraction).filter(
+        ProblemInteraction.user_id == current_user.id,
+        ProblemInteraction.problem_id == problem_id
+    ).first()
+    
+    if not interaction:
+        # Create new interaction with bookmark
+        interaction = ProblemInteraction(
+            user_id=current_user.id,
+            problem_id=problem_id,
+            bookmark=True,
+            upvote=False,
+            downvote=False
+        )
+        db.add(interaction)
+        bookmarked = True
+        message = "Problem bookmarked"
+    else:
+        # Toggle bookmark status
+        interaction.bookmark = not interaction.bookmark
+        bookmarked = interaction.bookmark
+        message = "Problem bookmarked" if bookmarked else "Bookmark removed"
+        
+        # If no interactions left, delete the record
+        if not interaction.bookmark and not interaction.upvote and not interaction.downvote:
+            db.delete(interaction)
+    
+    db.commit()
+    return {"bookmarked": bookmarked, "message": message}
+
+@app.post("/api/problems/{problem_id}/upvote")
+def toggle_upvote(problem_id: str,
+                 current_user: User = Depends(get_current_user),
+                 db: Session = Depends(get_db)):
+    """Toggle upvote status for a problem"""
+    # Check if problem exists
+    problem = db.query(Problem).filter(Problem.id == problem_id).first()
+    if not problem:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Problem not found")
+    
+    # Get or create interaction record
+    interaction = db.query(ProblemInteraction).filter(
+        ProblemInteraction.user_id == current_user.id,
+        ProblemInteraction.problem_id == problem_id
+    ).first()
+    
+    if not interaction:
+        # Create new interaction with upvote
+        interaction = ProblemInteraction(
+            user_id=current_user.id,
+            problem_id=problem_id,
+            bookmark=False,
+            upvote=True,
+            downvote=False
+        )
+        db.add(interaction)
+        upvoted = True
+        message = "Problem upvoted"
+    else:
+        # Toggle upvote status and ensure mutual exclusion with downvote
+        if interaction.upvote:
+            # Remove upvote
+            interaction.upvote = False
+            upvoted = False
+            message = "Upvote removed"
+        else:
+            # Add upvote and remove downvote if present
+            interaction.upvote = True
+            interaction.downvote = False
+            upvoted = True
+            message = "Problem upvoted"
+        
+        # If no interactions left, delete the record
+        if not interaction.bookmark and not interaction.upvote and not interaction.downvote:
+            db.delete(interaction)
+    
+    db.commit()
+    
+    # Get current upvote count
+    upvote_count = db.query(ProblemInteraction).filter(
+        ProblemInteraction.problem_id == problem_id,
+        ProblemInteraction.upvote == True
+    ).count()
+    
+    return {"upvoted": upvoted, "upvote_count": upvote_count, "message": message}
+
+@app.post("/api/problems/{problem_id}/downvote")
+def toggle_downvote(problem_id: str,
+                   current_user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Toggle downvote status for a problem"""
+    # Check if problem exists
+    problem = db.query(Problem).filter(Problem.id == problem_id).first()
+    if not problem:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Problem not found")
+    
+    # Get or create interaction record
+    interaction = db.query(ProblemInteraction).filter(
+        ProblemInteraction.user_id == current_user.id,
+        ProblemInteraction.problem_id == problem_id
+    ).first()
+    
+    if not interaction:
+        # Create new interaction with downvote
+        interaction = ProblemInteraction(
+            user_id=current_user.id,
+            problem_id=problem_id,
+            bookmark=False,
+            upvote=False,
+            downvote=True
+        )
+        db.add(interaction)
+        downvoted = True
+        message = "Problem downvoted"
+    else:
+        # Toggle downvote status and ensure mutual exclusion with upvote
+        if interaction.downvote:
+            # Remove downvote
+            interaction.downvote = False
+            downvoted = False
+            message = "Downvote removed"
+        else:
+            # Add downvote and remove upvote if present
+            interaction.downvote = True
+            interaction.upvote = False
+            downvoted = True
+            message = "Problem downvoted"
+        
+        # If no interactions left, delete the record
+        if not interaction.bookmark and not interaction.upvote and not interaction.downvote:
+            db.delete(interaction)
+    
+    db.commit()
+    return {"downvoted": downvoted, "message": message}
+
+# Legacy endpoints (maintain compatibility during transition)
+@app.post("/api/problems/{problem_id}/like")
+def toggle_like_legacy(problem_id: str,
+                      current_user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """Legacy like endpoint - redirects to upvote"""
+    return toggle_upvote(problem_id, current_user, db)
 
 
 @app.get("/api/problems/{problem_id}",
@@ -389,21 +741,45 @@ def get_problem(problem_id: str,
                 "expectedOutput": []
             }
     
-    # Check if problem is premium and user doesn't have premium access
-    if problem.premium is True and (not current_user or not current_user.premium):
-        # Return problem with premium message instead of throwing error
-        problem_data = ProblemResponse.from_orm(problem)
-        premium_question = QuestionData(
-            description="Want to lift try Premium 🏋️‍♂️",
-            tables=[],
-            expectedOutput=[]
-        )
-        problem_data.question = premium_question
-        problem_data.hints = []  # Hide hints for non-premium users
-        return problem_data
+    # Premium access is handled at frontend level - no backend modification needed
     
     # Create response from ORM
     problem_data = ProblemResponse.from_orm(problem)
+    
+    # Add interaction status for authenticated users
+    if current_user:
+        # Check user's interaction with this problem
+        interaction = db.query(ProblemInteraction).filter(
+            ProblemInteraction.user_id == current_user.id,
+            ProblemInteraction.problem_id == problem_id
+        ).first()
+        
+        if interaction:
+            problem_data.is_bookmarked = interaction.bookmark
+            problem_data.is_upvoted = interaction.upvote
+            problem_data.is_downvoted = interaction.downvote
+        else:
+            problem_data.is_bookmarked = False
+            problem_data.is_upvoted = False
+            problem_data.is_downvoted = False
+        
+        # For backward compatibility, set is_liked = is_upvoted
+        problem_data.is_liked = problem_data.is_upvoted
+    else:
+        problem_data.is_bookmarked = False
+        problem_data.is_upvoted = False
+        problem_data.is_downvoted = False
+        problem_data.is_liked = False
+    
+    # Get total upvotes count for this problem
+    upvotes_count = db.query(ProblemInteraction).filter(
+        ProblemInteraction.problem_id == problem_id,
+        ProblemInteraction.upvote == True
+    ).count()
+    problem_data.upvotes_count = upvotes_count
+    
+    # For backward compatibility, set likes_count = upvotes_count
+    problem_data.likes_count = upvotes_count
     
     # Use expected_display for user-facing expected output (separate from validation)
     if hasattr(problem, 'expected_display') and problem.expected_display is not None:
@@ -456,6 +832,10 @@ async def submit_solution(problem_id: str,
                             detail=result.get('feedback',
                                               ['Submission failed'])[0])
 
+    # Track successful submission for recommendation system
+    if result['success']:
+        track_successful_submission(current_user.id, problem_id, db)
+
     # Add console output to submission response
     result['console_output'] = format_console_output(result)
     
@@ -491,6 +871,9 @@ async def test_query(problem_id: str,
     if not query:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Query is required")
+
+    # Track first query time for recommendation system
+    track_first_query(current_user.id, problem_id, db)
 
     result = await secure_executor.test_query(current_user.id, problem_id,
                                               query, db, include_hidden)
@@ -645,15 +1028,19 @@ def get_official_solution(problem_id: str, db: Session = Depends(get_db)):
             detail="Problem not found"
         )
     
-    logger.info(f"Problem {problem_id} solution_source: {problem.solution_source}")
+    # Check if problem has solution_source attribute (legacy support)
+    solution_source = getattr(problem, 'solution_source', None)
+    s3_solution_source = getattr(problem, 's3_solution_source', None)
+    
+    logger.info(f"Problem {problem_id} solution_source: {solution_source}")
     
     # Admin-controlled hybrid logic: check the solution_source field
-    if problem.solution_source == 's3' and problem.s3_solution_source:
+    if solution_source == 's3' and s3_solution_source:
         logger.info(f"Using S3 solution source for problem {problem_id}")
         
         try:
             # Extract S3 solution source info configured by admin
-            s3_solution_data = problem.s3_solution_source
+            s3_solution_data = s3_solution_source
             bucket = s3_solution_data.get('bucket')
             solution_key = s3_solution_data.get('key')
             
