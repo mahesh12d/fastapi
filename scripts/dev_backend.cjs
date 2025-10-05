@@ -43,6 +43,10 @@ async function startBackend() {
   const useUv = forceUv && !disableUv && hasUv();
   const pythonCmd = detectPythonCommand();
   
+  // Set development environment variables
+  process.env.DEV_TOKEN_BYPASS = 'true';
+  process.env.DEV_ADMIN_BYPASS = 'true';
+  
   // Set environment variables to prevent Unicode encoding issues
   process.env.PYTHONIOENCODING = 'utf-8';
   process.env.LC_ALL = 'C.UTF-8';
@@ -80,7 +84,7 @@ async function startBackend() {
     console.log('🚀 Starting backend with uv...');
     const backend = spawn('uv', [
       'run', 'uvicorn', 'api.main:app',
-      '--host', '0.0.0.0',
+      '--host', 'localhost',
       '--port', '8000',
       '--reload',
       '--reload-dir', 'api'
@@ -119,7 +123,7 @@ async function startBackend() {
     console.log(`🚀 Starting backend with ${pythonCmd} -m uvicorn...`);
     const backend = spawn(pythonCmd, [
       '-m', 'uvicorn', 'api.main:app',
-      '--host', '0.0.0.0',
+      '--host', 'localhost',
       '--port', '8000',
       '--reload',
       '--reload-dir', 'api'

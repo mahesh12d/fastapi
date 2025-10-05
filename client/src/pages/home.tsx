@@ -1,12 +1,133 @@
 import { useQuery } from '@tanstack/react-query';
-import { Play, TrendingUp, Users, Target } from 'lucide-react';
+import { Play, TrendingUp, Users, Target, Building, ExternalLink, Link2 } from 'lucide-react';
 import { Link } from 'wouter';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/hooks/use-auth';
-import { problemsApi, leaderboardApi } from '@/lib/auth';
+import { problemsApi } from '@/lib/auth';
 import { DifficultyBadge } from '@/components/DifficultyBadge';
 import { CompanyLogo } from '@/components/CompanyLogo';
+import { useMemo } from 'react';
+
+function getDynamicMessage(problemsSolved: number): { message: string; emoji: string } {
+  if (problemsSolved === 0) {
+    return {
+      message: "Let's start your SQL training journey!",
+      emoji: '🚀'
+    };
+  }
+  
+  if (problemsSolved < 5) {
+    return {
+      message: "You're off to a great start!",
+      emoji: '🌱'
+    };
+  }
+  
+  if (problemsSolved < 10) {
+    return {
+      message: "Keep up the momentum!",
+      emoji: '💪'
+    };
+  }
+  
+  if (problemsSolved < 25) {
+    return {
+      message: "You're making excellent progress!",
+      emoji: '⭐'
+    };
+  }
+  
+  if (problemsSolved < 50) {
+    return {
+      message: "You're becoming a SQL athlete!",
+      emoji: '🏃'
+    };
+  }
+  
+  if (problemsSolved < 100) {
+    return {
+      message: "Impressive dedication to SQL mastery!",
+      emoji: '🔥'
+    };
+  }
+  
+  return {
+    message: "You're a SQL champion!",
+    emoji: '🏆'
+  };
+}
+
+interface HelpfulLink {
+  id: string;
+  userId: string;
+  title: string;
+  url: string;
+  createdAt: string;
+  user: {
+    id: string;
+    username: string;
+    firstName?: string;
+    lastName?: string;
+  };
+}
+
+function HelpfulLinksSection() {
+  const { data: links, isLoading } = useQuery<HelpfulLink[]>({
+    queryKey: ['/api/helpful-links'],
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center space-x-2">
+          <Link2 className="w-5 h-5 text-primary" />
+          <span>Helpful Resources</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <div className="space-y-3">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="h-16 bg-muted rounded-lg animate-pulse" />
+            ))}
+          </div>
+        ) : links && links.length > 0 ? (
+          <div className="space-y-3">
+            {links.map((link) => (
+              <div
+                key={link.id}
+                className="p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors"
+                data-testid={`link-item-${link.id}`}
+              >
+                <a
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-sm text-foreground hover:text-primary flex items-center space-x-1"
+                  data-testid={`link-url-${link.id}`}
+                >
+                  <span className="truncate">{link.title}</span>
+                  <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                </a>
+                <p className="text-xs text-muted-foreground mt-1">
+                  by {link.user.firstName && link.user.lastName 
+                    ? `${link.user.firstName} ${link.user.lastName}` 
+                    : link.user.username}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-muted-foreground">
+            <Link2 className="w-12 h-12 mx-auto mb-3 opacity-20" />
+            <p className="text-sm">No helpful links yet</p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Home() {
   const { user } = useAuth();
@@ -16,15 +137,19 @@ export default function Home() {
     queryFn: () => problemsApi.getAll(),
   });
 
-  const { data: leaderboard, isLoading: leaderboardLoading } = useQuery({
-    queryKey: ['/api/leaderboard'],
-    queryFn: () => leaderboardApi.get(5),
-  });
-
-
-
   const recentProblems = problems?.slice(0, 3) || [];
-  const topUsers = leaderboard?.slice(0, 3) || [];
+
+  const bannerContent = useMemo(() => {
+    const { message, emoji } = getDynamicMessage(user?.problemsSolved || 0);
+    return { message, emoji };
+  }, [user?.problemsSolved]);
+
+  const displayName = useMemo(() => {
+    if (user?.firstName && user?.lastName) {
+      return `${user.firstName} ${user.lastName}`;
+    }
+    return user?.username || 'there';
+  }, [user?.firstName, user?.lastName, user?.username]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -32,11 +157,17 @@ export default function Home() {
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-foreground mb-2">
-            Welcome back, <span className="text-primary">{user?.username}</span>! 💪
+            Welcome back, <span className="text-primary">{displayName}</span>! {bannerContent.emoji}
           </h1>
           <p className="text-xl text-muted-foreground">
-            Ready to continue your SQL training journey?
+            {bannerContent.message}
           </p>
+          {user?.companyName && (
+            <div className="flex items-center mt-2 text-muted-foreground">
+              <Building className="h-4 w-4 mr-2" />
+              <span className="text-sm">{user.companyName}</span>
+            </div>
+          )}
         </div>
 
         <div className="grid lg:grid-cols-3 gap-8">
@@ -171,50 +302,7 @@ export default function Home() {
 
           {/* Sidebar */}
           <div className="space-y-6">
-
-            {/* Leaderboard Preview */}
-            <Card>
-              <CardHeader>
-                <div className="flex justify-between items-center">
-                  <CardTitle>Top Athletes</CardTitle>
-                  <Link href="/leaderboard">
-                    <Button variant="ghost" size="sm" data-testid="link-view-leaderboard">
-                      View All
-                    </Button>
-                  </Link>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {leaderboardLoading ? (
-                  <div className="space-y-3">
-                    {[...Array(3)].map((_, i) => (
-                      <div key={i} className="flex items-center space-x-3">
-                        <div className="w-10 h-10 bg-muted rounded-full" />
-                        <div className="flex-1 space-y-1">
-                          <div className="h-4 bg-muted rounded w-3/4" />
-                          <div className="h-3 bg-muted rounded w-1/2" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {topUsers.map((topUser, index) => (
-                      <div key={topUser.id} className="flex items-center space-x-3" data-testid={`user-rank-${index + 1}`}>
-                        <div className="w-10 h-10 bg-primary text-primary-foreground rounded-full flex items-center justify-center font-bold text-sm">
-                          {index + 1}
-                        </div>
-                        <div className="flex-1">
-                          <div className="font-medium text-foreground">{topUser.username}</div>
-                          <div className="text-sm text-muted-foreground">{topUser.problemsSolved} problems solved</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
+            <HelpfulLinksSection />
           </div>
         </div>
       </div>

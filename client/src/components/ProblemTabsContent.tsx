@@ -14,6 +14,9 @@ import { useAuth } from '@/hooks/use-auth';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import ProblemDescriptionTab from '@/components/ProblemDescriptionTab';
 import AnswersScreen from '@/components/AnswersScreen';
+import ResultComparisonTable from './ResultComparisonTable';
+import { RichTextEditor } from '@/components/RichTextEditor';
+import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 
 interface Problem {
   id?: string;
@@ -311,7 +314,7 @@ const DiscussionCard = memo(function DiscussionCard({
   onLike: (id: string, isLiked: boolean) => void;
   onComment: (id: string) => void;
 }) {
-  const [showComments, setShowComments] = useState(false);
+  const [showComments, setShowComments] = useState(discussion.comments > 0);
   const [replyContent, setReplyContent] = useState('');
   const { toast } = useToast();
 
@@ -361,9 +364,9 @@ const DiscussionCard = memo(function DiscussionCard({
               </span>
             </div>
             
-            <p className="text-foreground mb-3 whitespace-pre-wrap" data-testid={`text-content-${discussion.id}`}>
-              {discussion.content}
-            </p>
+            <div className="mb-3" data-testid={`text-content-${discussion.id}`}>
+              <MarkdownRenderer content={discussion.content} />
+            </div>
             
             {discussion.codeSnippet && (
               <div className="bg-muted/50 rounded-lg p-3 mb-3">
@@ -393,7 +396,8 @@ const DiscussionCard = memo(function DiscussionCard({
                 data-testid={`button-comments-${discussion.id}`}
               >
                 <MessageSquare className="w-4 h-4 mr-1" />
-                {discussion.comments}
+                {showComments ? 'Hide' : 'View'} {discussion.comments} {discussion.comments === 1 ? 'comment' : 'comments'}
+                {showComments ? <ChevronUp className="w-3 h-3 ml-1" /> : <ChevronDown className="w-3 h-3 ml-1" />}
               </Button>
             </div>
             
@@ -440,89 +444,6 @@ const DiscussionCard = memo(function DiscussionCard({
   );
 });
 
-const CreateDiscussionDialog = memo(function CreateDiscussionDialog({ 
-  problemId, 
-  onClose 
-}: { 
-  problemId: string;
-  onClose: () => void;
-}) {
-  const [content, setContent] = useState('');
-  const [codeSnippet, setCodeSnippet] = useState('');
-  const { toast } = useToast();
-
-  const createMutation = useMutation({
-    mutationFn: async (data: { content: string; codeSnippet?: string }) => {
-      return apiRequest('POST', `/api/problems/${problemId}/discussions`, {
-          content: data.content,
-          codeSnippet: data.codeSnippet || undefined,
-        });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/problems/${problemId}/discussions`] });
-      setContent('');
-      setCodeSnippet('');
-      onClose();
-      toast({ title: "Discussion posted successfully!" });
-    },
-    onError: () => {
-      toast({ title: "Failed to create discussion", variant: "destructive" });
-    },
-  });
-
-  const handleSubmit = () => {
-    if (!content.trim()) return;
-    createMutation.mutate({ content, codeSnippet });
-  };
-
-  return (
-    <DialogContent className="max-w-2xl" data-testid="dialog-create-discussion">
-      <DialogHeader>
-        <DialogTitle>Start a New Discussion</DialogTitle>
-      </DialogHeader>
-      <div className="space-y-4">
-        <div>
-          <Textarea
-            placeholder="What would you like to discuss about this problem?"
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={4}
-            className="resize-none"
-            data-testid="textarea-discussion-content"
-          />
-        </div>
-        <details>
-          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground mb-2">
-            Add code snippet (optional)
-          </summary>
-          <Textarea
-            placeholder="-- Your SQL code here
-SELECT column1, column2
-FROM table_name
-WHERE condition;"
-            value={codeSnippet}
-            onChange={(e) => setCodeSnippet(e.target.value)}
-            rows={4}
-            className="font-mono text-sm resize-none"
-            data-testid="textarea-discussion-code"
-          />
-        </details>
-        <div className="flex justify-end space-x-2">
-          <Button variant="outline" onClick={onClose} data-testid="button-cancel-discussion">
-            Cancel
-          </Button>
-          <Button 
-            onClick={handleSubmit}
-            disabled={!content.trim() || createMutation.isPending}
-            data-testid="button-submit-discussion"
-          >
-            {createMutation.isPending ? "Posting..." : "Post Discussion"}
-          </Button>
-        </div>
-      </div>
-    </DialogContent>
-  );
-});
 
 const ProblemTabsContent = memo(function ProblemTabsContent({
   problem,
@@ -533,7 +454,7 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
   onTabChange,
   problemId,
 }: ProblemTabsContentProps) {
-  const [showCreateDiscussion, setShowCreateDiscussion] = useState(false);
+  const [newDiscussionContent, setNewDiscussionContent] = useState('');
   const { toast } = useToast();
   const { user } = useAuth();
 
@@ -545,6 +466,26 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
     queryKey: [`/api/problems/${problemId}/discussions`],
     enabled: !!problemId,
   });
+
+  // Create discussion mutation
+  const createDiscussionMutation = useMutation({
+    mutationFn: async (content: string) => {
+      return apiRequest('POST', `/api/problems/${problemId}/discussions`, { content });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/problems/${problemId}/discussions`] });
+      setNewDiscussionContent('');
+      toast({ title: "Discussion posted successfully!" });
+    },
+    onError: () => {
+      toast({ title: "Failed to create discussion", variant: "destructive" });
+    },
+  });
+
+  const handleCreateDiscussion = () => {
+    if (!newDiscussionContent.trim()) return;
+    createDiscussionMutation.mutate(newDiscussionContent);
+  };
 
   // Like/unlike discussion mutation
   const likeMutation = useMutation({
@@ -628,29 +569,39 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
           data-testid="content-discussion"
         >
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-foreground">
                 Discussion
               </h3>
-              <Dialog open={showCreateDiscussion} onOpenChange={setShowCreateDiscussion}>
-                <DialogTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    data-testid="button-new-discussion"
-                  >
-                    <MessageSquare className="h-4 w-4 mr-2" />
-                    New Discussion
-                  </Button>
-                </DialogTrigger>
-                  {problemId && (
-                    <CreateDiscussionDialog 
-                      problemId={problemId} 
-                      onClose={() => setShowCreateDiscussion(false)} 
-                    />
-                  )}
-                </Dialog>
             </div>
+
+            {/* Create Discussion - Inline Editor */}
+            {user && (
+              <Card className="border-2 border-primary/20 hover:border-primary/40 transition-all duration-300 shadow-lg hover:shadow-xl bg-gradient-to-br from-background via-background to-primary/5">
+                <CardContent className="p-6">
+                  <div className="w-full">
+                    <RichTextEditor
+                      value={newDiscussionContent}
+                      onChange={setNewDiscussionContent}
+                      placeholder="Share your thoughts, ask questions, or discuss solutions for this problem..."
+                      minHeight="120px"
+                      testId="textarea-new-discussion"
+                    />
+
+                    <div className="flex justify-end mt-3">
+                      <Button
+                        onClick={handleCreateDiscussion}
+                        disabled={!newDiscussionContent.trim() || createDiscussionMutation.isPending}
+                        className="bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 shadow-md hover:shadow-lg transform hover:scale-105 transition-all duration-200"
+                        data-testid="button-post-discussion"
+                      >
+                        {createDiscussionMutation.isPending ? "Posting..." : "Post Discussion"}
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Premium lock removed - discussions now always available */}
             {false ? (
@@ -767,6 +718,14 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
                             data={mainTestResult.expected_output} 
                             title="Expected Output" 
                           />
+                          
+                          {/* Detailed Result Comparison */}
+                          {mainTestResult.validation_details && (
+                            <ResultComparisonTable 
+                              validationDetails={mainTestResult.validation_details}
+                              isCorrect={latestSubmissionResult.is_correct}
+                            />
+                          )}
                         </>
                       ) : null;
                     })()}
@@ -775,41 +734,8 @@ const ProblemTabsContent = memo(function ProblemTabsContent({
               </div>
             )}
 
-            {/* Submission History */}
-            {userSubmissions.length > 0 ? (
-              <div className="space-y-3">
-                <h4 className="text-md font-semibold text-foreground border-t pt-4">
-                  Submission History
-                </h4>
-                {userSubmissions.map((submission, index) => (
-                  <Card key={submission.id} className="p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div
-                          className={`w-3 h-3 rounded-full ${
-                            submission.isCorrect ? "bg-green-500" : "bg-red-500"
-                          }`}
-                        />
-                        <span className="text-sm font-mono">
-                          Submission {index + 1}
-                        </span>
-                        {submission.isCorrect && (
-                          <Badge className="bg-green-100 text-green-800 text-xs">
-                            ✓ Accepted
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {new Date(submission.submittedAt).toLocaleDateString()}
-                      </div>
-                    </div>
-                    <div className="mt-3 text-sm text-muted-foreground">
-                      Runtime: {submission.executionTime || "N/A"}ms
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            ) : !latestSubmissionResult && (
+            {/* Show message when no submissions */}
+            {!latestSubmissionResult && userSubmissions.length === 0 && (
               <div className="text-center py-8">
                 <CheckCircle className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                 <h4 className="text-base font-semibold text-foreground mb-2">

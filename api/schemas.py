@@ -79,6 +79,8 @@ class UserBase(CamelCaseModel):
     email: EmailStr
     first_name: Optional[str] = None
     last_name: Optional[str] = None
+    company_name: Optional[str] = None
+    linkedin_url: Optional[str] = None
     profile_image_url: Optional[str] = None
 
 class UserCreate(UserBase):
@@ -194,6 +196,7 @@ class CommunityPostResponse(CommunityPostBase):
     created_at: datetime
     user: UserResponse
     problem: Optional[CommunityProblemResponse] = None
+    liked_by_current_user: bool = False
 
 # Post comment schemas
 class PostCommentBase(CamelCaseModel):
@@ -275,23 +278,6 @@ class TestCaseCreate(TestCaseBase):
     pass
 
 class TestCaseResponse(TestCaseBase):
-    id: str
-    created_at: datetime
-    updated_at: datetime
-
-# Problem schema schemas
-class ProblemSchemaBase(CamelCaseModel):
-    problem_id: str
-    table_name: str
-    schema_definition: Dict[str, Any]
-    sample_data: List[Dict[str, Any]] = []
-    indexes: List[Dict[str, Any]] = []
-    constraints: List[Dict[str, Any]] = []
-
-class ProblemSchemaCreate(ProblemSchemaBase):
-    pass
-
-class ProblemSchemaResponse(ProblemSchemaBase):
     id: str
     created_at: datetime
     updated_at: datetime
@@ -383,9 +369,8 @@ class EnhancedUserResponse(UserResponse):
     total_xp: Optional[int] = 0
 
 class EnhancedProblemResponse(ProblemResponse):
-    """Enhanced problem response with test cases and schema"""
+    """Enhanced problem response with test cases"""
     test_cases: Optional[List[TestCaseResponse]] = []
-    schemas: Optional[List[ProblemSchemaResponse]] = []
     topic: Optional[TopicResponse] = None
 
 class DetailedSubmissionResponse(SubmissionResponse):
@@ -412,3 +397,20 @@ class SolutionResponse(SolutionBase):
     created_at: datetime
     updated_at: datetime
     creator: UserResponse
+
+
+class HelpfulLinkBase(CamelCaseModel):
+    title: str
+    url: str
+
+
+class HelpfulLinkCreate(HelpfulLinkBase):
+    pass
+
+
+class HelpfulLinkResponse(HelpfulLinkBase):
+    id: str
+    user_id: str
+    created_at: datetime
+    user: UserResponse
+

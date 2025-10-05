@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Switch, Route, useLocation } from "wouter";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
@@ -12,9 +13,9 @@ import Leaderboard from "@/pages/leaderboard";
 import Community from "@/pages/community";
 import Submissions from "@/pages/submissions";
 import AdminPanel from "@/pages/admin-panel";
+import Profile from "@/pages/profile";
 import NotFound from "@/pages/not-found";
 import Navbar from "@/components/navbar";
-
 function AppRouter() {
   const { isAuthenticated, isLoading } = useAuth();
   const [location] = useLocation();
@@ -35,7 +36,9 @@ function AppRouter() {
 
   return (
     <>
-      {isAuthenticated && !isOnProblemDetailPage && <Navbar />}
+      {isAuthenticated && !isOnProblemDetailPage && (
+        <Navbar />
+      )}
       <Switch>
         {!isAuthenticated ? (
           <Route path="/" component={Landing} />
@@ -47,6 +50,7 @@ function AppRouter() {
             <Route path="/leaderboard" component={Leaderboard} />
             <Route path="/community" component={Community} />
             <Route path="/submissions" component={Submissions} />
+            <Route path="/profile" component={Profile} />
             <Route path="/admin-panel" component={AdminPanel} />
           </>
         )}

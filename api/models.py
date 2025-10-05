@@ -57,6 +57,8 @@ class User(Base):
     password_hash = Column(Text, name="password_hash")
     first_name = Column(String(50), name="first_name")
     last_name = Column(String(50), name="last_name")
+    company_name = Column(String(100), name="company_name")
+    linkedin_url = Column(Text, name="linkedin_url")
     profile_image_url = Column(Text, name="profile_image_url")
     google_id = Column(String(255), unique=True, name="google_id")
     github_id = Column(String(255), unique=True, name="github_id")
@@ -74,6 +76,43 @@ class User(Base):
     post_comments = relationship("PostComment", back_populates="user")
     progress = relationship("UserProgress", back_populates="user")
     user_badges = relationship("UserBadge", back_populates="user")
+    
+    # Follower relationships
+    following = relationship(
+        "Follower",
+        foreign_keys="Follower.follower_id",
+        back_populates="follower_user",
+        cascade="all, delete-orphan"
+    )
+    followers = relationship(
+        "Follower",
+        foreign_keys="Follower.following_id",
+        back_populates="following_user",
+        cascade="all, delete-orphan"
+    )
+    
+
+class Follower(Base):
+    """Track user follower relationships"""
+    __tablename__ = "followers"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    follower_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    following_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    
+    # Relationships
+    follower_user = relationship("User", foreign_keys=[follower_id], back_populates="following")
+    following_user = relationship("User", foreign_keys=[following_id], back_populates="followers")
+    
+    # Unique constraint: one follow relationship per user pair
+    # Indexes for performance
+    __table_args__ = (
+        UniqueConstraint('follower_id', 'following_id', name='uq_follower_following'),
+        Index('idx_followers_follower_id', 'follower_id'),
+        Index('idx_followers_following_id', 'following_id'),
+    )
+
 
 class Problem(Base):
     __tablename__ = "problems"
@@ -110,7 +149,6 @@ class Problem(Base):
     # Relationships
     submissions = relationship("Submission", back_populates="problem")
     test_cases = relationship("TestCase", back_populates="problem")
-    schemas = relationship("ProblemSchema", back_populates="problem")
     community_posts = relationship("CommunityPost", back_populates="problem")
     solutions = relationship("Solution", back_populates="problem")
     topic = relationship("Topic", back_populates="problems")
@@ -246,26 +284,6 @@ class TestCase(Base):
     
     # Unique constraint: unique name per problem
     __table_args__ = (UniqueConstraint('problem_id', 'name', name='uq_test_cases_problem_name'),)
-
-class ProblemSchema(Base):
-    """Define table structures that problems will use"""
-    __tablename__ = "problem_schemas"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    problem_id = Column(String, ForeignKey("problems.id", ondelete="CASCADE"), nullable=False)
-    table_name = Column(String(100), nullable=False)
-    schema_definition = Column(JSONB, nullable=False)  # Table structure with columns, types, constraints
-    sample_data = Column(JSONB, default=list)  # Sample rows for the table
-    indexes = Column(JSON, default=list)  # Index definitions
-    constraints = Column(JSON, default=list)  # FK, CHECK constraints etc
-    created_at = Column(DateTime, default=func.now(), nullable=False)
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
-    
-    # Relationships
-    problem = relationship("Problem", back_populates="schemas")
-    
-    # Unique constraint: unique table_name per problem
-    __table_args__ = (UniqueConstraint('problem_id', 'table_name', name='uq_problem_schemas_problem_table'),)
 
 class ExecutionResult(Base):
     """Track detailed query execution results"""
@@ -447,3 +465,56 @@ class Solution(Base):
         Index('idx_solutions_created_by', 'created_by'),
         Index('idx_solutions_created_at', 'created_at'),
     )
+
+
+# Redis-backed Models for Problem Queue
+
+class ProblemSubmissionQueue(Base):
+    """Problem submissions for job queue processing (persisted from Redis)"""
+    __tablename__ = "problem_submissions"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    problem_id = Column(String, ForeignKey("problems.id", ondelete="CASCADE"), nullable=False)
+    sql_query = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="queued")  # queued, processing, completed, failed
+    rows_returned = Column(Integer, nullable=True)
+    execution_time_ms = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    result_data = Column(JSONB, nullable=True)  # Query results for analytics
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    user = relationship("User", backref="problem_queue_submissions")
+    problem = relationship("Problem", backref="queue_submissions")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_problem_submissions_user_id', 'user_id'),
+        Index('idx_problem_submissions_problem_id', 'problem_id'),
+        Index('idx_problem_submissions_status', 'status'),
+        Index('idx_problem_submissions_created_at', 'created_at'),
+        Index('idx_problem_submissions_completed_at', 'completed_at'),
+    )
+
+
+class HelpfulLink(Base):
+    """Helpful links shared by premium users for the community"""
+    __tablename__ = "helpful_links"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(200), nullable=False)
+    url = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    
+    # Relationships
+    user = relationship("User", backref="helpful_links")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_helpful_links_created_at', 'created_at'),
+        Index('idx_helpful_links_user_id', 'user_id'),
+    )
+

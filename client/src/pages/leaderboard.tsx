@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { leaderboardApi } from '@/lib/auth';
 import { useAuth } from '@/hooks/use-auth';
+import { UserProfilePopover } from '@/components/UserProfilePopover';
 
 export default function Leaderboard() {
   const [limit, setLimit] = useState(50);
@@ -87,22 +88,49 @@ export default function Leaderboard() {
                           )}
                         </div>
 
-                        {/* Avatar */}
-                        <Avatar className="w-12 h-12">
-                          <AvatarImage src={athlete.profileImageUrl} alt={athlete.username} />
-                          <AvatarFallback>
-                            {athlete.username?.charAt(0).toUpperCase() || 'U'}
-                          </AvatarFallback>
-                        </Avatar>
+                        {/* Avatar - Clickable for Chat */}
+                        <UserProfilePopover 
+                          user={{
+                            id: athlete.id,
+                            username: athlete.username,
+                            first_name: athlete.firstName,
+                            last_name: athlete.lastName,
+                            profileImageUrl: athlete.profileImageUrl,
+                            problemsSolved: athlete.problemsSolved,
+                            rank: index + 1,
+                            premium: athlete.premium
+                          }}
+                        >
+                          <Avatar className="w-12 h-12 ring-2 ring-transparent hover:ring-primary/50 transition-all cursor-pointer">
+                            <AvatarImage src={athlete.profileImageUrl} alt={athlete.username} />
+                            <AvatarFallback>
+                              {athlete.username?.charAt(0).toUpperCase() || 'U'}
+                            </AvatarFallback>
+                          </Avatar>
+                        </UserProfilePopover>
 
-                        {/* User Info */}
+                        {/* User Info - Clickable for Chat */}
                         <div className="flex-1">
                           <div className="flex items-center space-x-2">
-                            <h4 className="font-semibold text-foreground" data-testid={`text-username-${index + 1}`}>
-                              {athlete.firstName && athlete.lastName 
-                                ? `${athlete.firstName} ${athlete.lastName}` 
-                                : athlete.username}
-                            </h4>
+                            <UserProfilePopover 
+                              user={{
+                                id: athlete.id,
+                                username: athlete.username,
+                                first_name: athlete.firstName,
+                                last_name: athlete.lastName,
+                                profileImageUrl: athlete.profileImageUrl,
+                                problemsSolved: athlete.problemsSolved,
+                                rank: index + 1,
+                                premium: athlete.premium
+                              }}
+                            >
+                              <h4 className="font-semibold text-foreground hover:text-primary cursor-pointer transition-colors" 
+                                  data-testid={`text-username-${index + 1}`}>
+                                {athlete.firstName && athlete.lastName 
+                                  ? `${athlete.firstName} ${athlete.lastName}` 
+                                  : athlete.username}
+                              </h4>
+                            </UserProfilePopover>
                             {athlete.id === user?.id && (
                               <Badge variant="outline" className="text-xs">You</Badge>
                             )}
@@ -175,29 +203,6 @@ export default function Leaderboard() {
             )}
 
 
-            {/* Weekly Challenge */}
-            <Card className="bg-gradient-to-br from-primary to-orange-400 text-white">
-              <CardHeader>
-                <CardTitle className="text-white">Weekly Challenge</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm opacity-90 mb-4">
-                  Solve 5 problems this week to climb the leaderboard faster!
-                </p>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span>Progress</span>
-                    <span>{Math.min(user?.problemsSolved || 0, 5)}/5</span>
-                  </div>
-                  <div className="w-full bg-white/20 rounded-full h-2">
-                    <div 
-                      className="bg-white h-2 rounded-full transition-all duration-300" 
-                      style={{ width: `${Math.min(((user?.problemsSolved || 0) / 5) * 100, 100)}%` }} 
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
 
             {/* Leaderboard Stats */}
             <Card>

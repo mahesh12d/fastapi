@@ -1,31 +1,23 @@
-modules = ["nodejs-20", "python-3.11", "web", "bash", "postgresql-16"]
+modules = ["nodejs-20", "python-3.11", "web"]
 run = "npm run dev"
 hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["arrow-cpp", "cacert", "cargo", "glibcLocales", "libiconv", "libxcrypt", "openssl", "pgadmin4", "pkg-config", "postgresql", "rustc"]
+packages = ["arrow-cpp", "cacert", "cargo", "glibcLocales", "libiconv", "libxcrypt", "openssl", "pgadmin4", "pkg-config", "postgresql", "redis", "rustc"]
 
 [deployment]
 build = ["npm", "run", "build"]
 deploymentTarget = "autoscale"
-run = ["python3.11", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "5000"]
+run = ["npm", "run", "start"]
 
 [[ports]]
 localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 35039
-externalPort = 8080
-
-[[ports]]
-localPort = 35155
+localPort = 36867
 externalPort = 3003
-
-[[ports]]
-localPort = 35545
-externalPort = 6800
 
 [[ports]]
 localPort = 37419
@@ -56,8 +48,16 @@ localPort = 42299
 externalPort = 6000
 
 [[ports]]
+localPort = 43147
+externalPort = 6800
+
+[[ports]]
 localPort = 43293
 externalPort = 3000
+
+[[ports]]
+localPort = 43505
+externalPort = 8080
 
 [[ports]]
 localPort = 45097
@@ -101,6 +101,15 @@ outputType = "webview"
 task = "shell.exec"
 args = "npm run dev"
 waitForPort = 5000
+
+[[workflows.workflow]]
+name = "Redis"
+mode = "sequential"
+author = 48238828
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3.11 -m api.redis_worker"
 
 [agent]
 integrations = [

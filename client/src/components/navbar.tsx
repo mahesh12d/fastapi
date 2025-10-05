@@ -1,6 +1,5 @@
 import { Link, useLocation } from 'wouter';
 import { Dumbbell, User, LogOut } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,13 +8,15 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/hooks/use-auth';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
 
 export default function Navbar() {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { user, logout } = useAuth();
 
   const handleLogout = () => {
     logout();
+    setLocation('/');
   };
 
   const navItems = [
@@ -79,6 +80,12 @@ export default function Navbar() {
                     <p className="text-xs text-muted-foreground">{user?.problemsSolved || 0} problems solved</p>
                   </div>
                 </div>
+                <Link href="/profile">
+                  <DropdownMenuItem data-testid="link-profile">
+                    <User className="mr-2 h-4 w-4" />
+                    <span>View Profile</span>
+                  </DropdownMenuItem>
+                </Link>
                 <DropdownMenuItem onClick={handleLogout} data-testid="button-logout">
                   <LogOut className="mr-2 h-4 w-4" />
                   <span>Log out</span>
